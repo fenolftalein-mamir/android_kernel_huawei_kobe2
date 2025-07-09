@@ -48,7 +48,7 @@ ENTRY(flush_icache_range)
  *	- start   - virtual start address of region
  *	- end     - virtual end address of region
  */
-ENTRY(__flush_cache_user_range)
+ENTRY_NOTAG(__flush_cache_user_range)
 	uaccess_ttbr0_enable x2, x3, x4
 	dcache_line_size x2, x3
 	sub	x3, x2, #1
@@ -180,7 +180,7 @@ ENDPROC(__dma_clean_area)
  *	- kaddr   - kernel address
  *	- size    - size in question
  */
-ENTRY(__clean_dcache_area_pop)
+ENTRY_NOTAG(__clean_dcache_area_pop)
 	alternative_if_not ARM64_HAS_DCPOP
 	b	__clean_dcache_area_poc
 	alternative_else_nop_endif
