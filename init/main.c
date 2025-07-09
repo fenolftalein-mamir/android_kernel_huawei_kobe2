@@ -95,6 +95,13 @@
 #include <asm/sections.h>
 #include <asm/cacheflush.h>
 
+#ifdef CONFIG_MTK_RAM_CONSOLE
+#include <mt-plat/mtk_ram_console.h>
+#endif
+#ifdef CONFIG_HW_BFMR_MTK
+#include "chipset_common/bfmr/bfm/chipsets/mtk/bfm_mtk.h"
+#endif
+
 static int kernel_init(void *);
 
 extern void init_IRQ(void);
@@ -510,6 +517,31 @@ static void __init mm_init(void)
 	pti_init();
 }
 
+#ifdef CMDLINE_INFO_FILTER
+static void __init print_filtered_cmdline(const char *cmdline)
+{
+	static char tmp_cmdline[COMMAND_LINE_SIZE] __initdata;
+	char *cmd_prefix = NULL;
+	char *cmd_suffix = NULL;
+	int len = 0;
+
+	if (cmdline == NULL)
+		return;
+
+	strlcpy(tmp_cmdline, cmdline, COMMAND_LINE_SIZE);
+	cmd_prefix = strstr(tmp_cmdline, "androidboot.serialno");
+	if (cmd_prefix == NULL) {
+		pr_notice("Kernel command line: %s\n", tmp_cmdline);
+		return;
+	}
+	cmd_suffix = strstr(cmd_prefix, " ");
+	len = (cmd_suffix != NULL) ? (cmd_suffix - cmd_prefix)
+		: (cmdline + strlen(cmdline) - cmd_prefix);
+	memset(cmd_prefix, '*', len);
+	pr_notice("Kernel command line: %s\n", tmp_cmdline);
+}
+#endif
+
 asmlinkage __visible void __init start_kernel(void)
 {
 	char *command_line;
@@ -549,7 +581,9 @@ asmlinkage __visible void __init start_kernel(void)
 	build_all_zonelists(NULL);
 	page_alloc_init();
 
-	pr_notice("Kernel command line: %s\n", boot_command_line);
+#ifdef CMDLINE_INFO_FILTER
+	print_filtered_cmdline(boot_command_line);
+#endif
 	/* parameters may set static keys */
 	jump_label_init();
 	parse_early_param();
@@ -576,7 +610,9 @@ asmlinkage __visible void __init start_kernel(void)
 
 	/* trace_printk can be enabled here */
 	early_trace_init();
-
+#ifdef CONFIG_HW_BFMR_MTK
+	hwboot_fail_init_struct();
+#endif
 	/*
 	 * Set up the scheduler prior starting any interrupts (such as the
 	 * timer interrupt). Full topology setup happens at smp_init()
@@ -809,21 +845,34 @@ static int __init_or_module do_one_initcall_debug(initcall_t fn)
 
 	return ret;
 }
+#ifdef CONFIG_MTPROF
+#include <bootprof.h>
+#else
+#define TIME_LOG_START()
+#define TIME_LOG_END()
+#define bootprof_initcall(fn, ts)
+#endif
 
 int __init_or_module do_one_initcall(initcall_t fn)
 {
 	int count = preempt_count();
 	int ret;
 	char msgbuf[64];
-
+#ifdef CONFIG_MTPROF
+	unsigned long long ts = 0;
+#endif
 	if (initcall_blacklisted(fn))
 		return -EPERM;
 
+#ifdef CONFIG_MTK_RAM_CONSOLE
+	aee_rr_rec_last_init_func((unsigned long)fn);
+#endif
+	TIME_LOG_START();
 	if (initcall_debug)
 		ret = do_one_initcall_debug(fn);
 	else
 		ret = fn();
-
+	TIME_LOG_END();
 	msgbuf[0] = 0;
 
 	if (preempt_count() != count) {
@@ -837,6 +886,7 @@ int __init_or_module do_one_initcall(initcall_t fn)
 	WARN(msgbuf[0], "initcall %pF returned with %s\n", fn, msgbuf);
 
 	add_latent_entropy();
+	bootprof_initcall(fn, ts);
 	return ret;
 }
 
@@ -897,6 +947,9 @@ static void __init do_initcalls(void)
 
 	for (level = 0; level < ARRAY_SIZE(initcall_levels) - 1; level++)
 		do_initcall_level(level);
+#ifdef CONFIG_MTK_RAM_CONSOLE
+	aee_rr_rec_last_init_func(~(unsigned long)(0));
+#endif
 }
 
 /*
@@ -1006,7 +1059,9 @@ static int __ref kernel_init(void *unused)
 	numa_default_policy();
 
 	rcu_end_inkernel_boot();
-
+#ifdef CONFIG_MTPROF
+		log_boot("Kernel_init_done");
+#endif
 	if (ramdisk_execute_command) {
 		ret = run_init_process(ramdisk_execute_command);
 		if (!ret)

@@ -5,6 +5,14 @@
 
 ccflags-y := -fno-function-sections -fno-data-sections
 
+ifdef CONFIG_MTPROF
+ccflags-y += -Idrivers/misc/mediatek/mtprof/
+endif
+
+ifdef CONFIG_MTK_RAM_CONSOLE
+ccflags-y += -Idrivers/misc/mediatek/include/
+endif
+
 obj-y                          := main.o version.o mounts.o
 obj-y                          += noinitramfs.o
 obj-$(CONFIG_BLK_DEV_INITRD)   += initramfs.o
@@ -12,6 +20,10 @@ obj-$(CONFIG_GENERIC_CALIBRATE_DELAY) += calibrate.o
 
 ifneq ($(CONFIG_ARCH_INIT_TASK),y)
 obj-y                          += init_task.o
+endif
+
+ifeq ($(TARGET_BUILD_VARIANT),eng)
+ccflags-y += -DCMDLINE_INFO_FILTER
 endif
 
 mounts-y			:= do_mounts.o
