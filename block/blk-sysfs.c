@@ -329,6 +329,31 @@ static ssize_t queue_nomerges_store(struct request_queue *q, const char *page,
 	return ret;
 }
 
+#ifdef CONFIG_ROW_VIP_QUEUE
+static ssize_t queue_qos_show(struct request_queue *q, char *page)
+{
+	return queue_var_show(blk_queue_qos_on(q), page);
+}
+
+static ssize_t queue_qos_store(struct request_queue *q, const char *page,
+				size_t count)
+{
+	unsigned long qos;
+	ssize_t ret = queue_var_store(&qos, page, count);
+
+	if (ret < 0)
+		return ret;
+	spin_lock_irq(q->queue_lock);
+	if (qos == 0)
+		queue_flag_clear(QUEUE_FLAG_QOS, q);
+	else
+		queue_flag_set(QUEUE_FLAG_QOS, q);
+	spin_unlock_irq(q->queue_lock);
+
+	return ret;
+}
+#endif
+
 static ssize_t queue_rq_affinity_show(struct request_queue *q, char *page)
 {
 	bool set = test_bit(QUEUE_FLAG_SAME_COMP, &q->queue_flags);
@@ -468,6 +493,90 @@ static ssize_t queue_wb_lat_store(struct request_queue *q, const char *page,
 	return count;
 }
 
+static ssize_t queue_wb_mode_show(struct request_queue *q, char *page)
+{
+	if (!q->rq_wb)
+		return -EINVAL;
+
+	return sprintf(page, "%s\n", q->rq_wb->mode ? "blk" : "fs");
+}
+
+static ssize_t queue_wb_mode_store(struct request_queue *q, const char *page,
+				     size_t count)
+{
+	char buf[8];
+	int ret = 0;
+
+	if (!q->rq_wb)
+		return -EINVAL;
+
+	if (sscanf(page, "%7s", buf) != 1)
+		return -EINVAL;
+
+	if (strnlen(buf, (size_t)7) == 2 &&
+	    !strncmp(buf, "fs", (size_t)2))
+		q->rq_wb->mode = WBT_FS;
+	else if (strnlen(buf, (size_t)7) == 3 &&
+	    !strncmp(buf, "blk", (size_t)3))
+		q->rq_wb->mode = WBT_BLK;
+	else
+		ret = -EINVAL;
+
+	if (!ret) {
+		int i;
+
+		for (i = 0; i < WBT_NUM_RWQ; i++) {
+			struct rq_wait *rqw = &q->rq_wb->rq_wait[i];
+
+			if (waitqueue_active(&rqw->wait))
+				wake_up_all(&rqw->wait);
+		}
+	}
+	return (ret < 0) ? ret : (ssize_t)count;
+}
+
+static ssize_t queue_hw_inflight_show(struct request_queue *q, char *page)
+{
+	ssize_t ret;
+
+	ret = sprintf(page, "async:%d\n", q->in_flight[0]);
+	ret += sprintf(page + ret, "sync:%d\n", q->in_flight[1]);
+	ret += sprintf(page + ret, "bg:%d\n", q->in_flight[2]);
+	ret += sprintf(page + ret, "fg:%d\n", q->in_flight[3]);
+	return ret;
+}
+
+static ssize_t queue_max_bg_depth_show(struct request_queue *q, char *page)
+{
+	ssize_t ret;
+
+	if (!q->queue_tags)
+		return -EINVAL;
+
+	ret = sprintf(page, "%d\n", q->queue_tags->max_bg_depth);
+	return ret;
+}
+
+static ssize_t queue_max_bg_depth_store(struct request_queue *q,
+					const char *page, size_t count)
+{
+	unsigned long val;
+	int ret;
+
+	if (!q->queue_tags)
+		return -EINVAL;
+
+	ret = queue_var_store(&val, page, count);
+	if (ret < 0)
+		return ret;
+
+	if (val > q->queue_tags->max_depth)
+		return -EINVAL;
+
+	q->queue_tags->max_bg_depth = val;
+	return (ssize_t)count;
+}
+
 static ssize_t queue_wc_show(struct request_queue *q, char *page)
 {
 	if (test_bit(QUEUE_FLAG_WC, &q->queue_flags))
@@ -503,6 +612,18 @@ static ssize_t queue_wc_store(struct request_queue *q, const char *page,
 static ssize_t queue_dax_show(struct request_queue *q, char *page)
 {
 	return queue_var_show(blk_queue_dax(q), page);
+}
+
+static ssize_t queue_inline_crypt_show(struct request_queue *q, char *page)
+{
+	return queue_var_show(blk_queue_inline_crypt(q), page);
+}
+
+static ssize_t queue_avg_perf_show(struct request_queue *q, char *page)
+{
+	return sprintf(page, "%llu %llu\n",
+				(unsigned long long)q->disk_bw * 512,
+				(unsigned long long)q->disk_iops);
 }
 
 static struct queue_sysfs_entry queue_requests_entry = {
@@ -632,6 +753,14 @@ static struct queue_sysfs_entry queue_nomerges_entry = {
 	.store = queue_nomerges_store,
 };
 
+#ifdef CONFIG_ROW_VIP_QUEUE
+static struct queue_sysfs_entry queue_qos_entry = {
+	.attr = {.name = "qos_on", .mode = S_IRUGO | S_IWUSR },
+	.show = queue_qos_show,
+	.store = queue_qos_store,
+};
+#endif
+
 static struct queue_sysfs_entry queue_rq_affinity_entry = {
 	.attr = {.name = "rq_affinity", .mode = S_IRUGO | S_IWUSR },
 	.show = queue_rq_affinity_show,
@@ -662,6 +791,11 @@ static struct queue_sysfs_entry queue_poll_delay_entry = {
 	.store = queue_poll_delay_store,
 };
 
+static struct queue_sysfs_entry queue_inline_crypt_entry = {
+	.attr = {.name = "inline_crypt", .mode = S_IRUGO },
+	.show = queue_inline_crypt_show,
+};
+
 static struct queue_sysfs_entry queue_wc_entry = {
 	.attr = {.name = "write_cache", .mode = S_IRUGO | S_IWUSR },
 	.show = queue_wc_show,
@@ -674,9 +808,15 @@ static struct queue_sysfs_entry queue_dax_entry = {
 };
 
 static struct queue_sysfs_entry queue_wb_lat_entry = {
-	.attr = {.name = "wbt_lat_usec", .mode = S_IRUGO | S_IWUSR },
+	.attr = {.name = "wb_lat_usec", .mode = S_IRUGO | S_IWUSR },
 	.show = queue_wb_lat_show,
 	.store = queue_wb_lat_store,
+};
+
+static struct queue_sysfs_entry queue_wb_mode_entry = {
+	.attr = {.name = "wb_mode", .mode = S_IRUGO | S_IWUSR },
+	.show = queue_wb_mode_show,
+	.store = queue_wb_mode_store,
 };
 
 #ifdef CONFIG_BLK_DEV_THROTTLING_LOW
@@ -686,6 +826,22 @@ static struct queue_sysfs_entry throtl_sample_time_entry = {
 	.store = blk_throtl_sample_time_store,
 };
 #endif
+
+static struct queue_sysfs_entry queue_avg_perf_entry = {
+	.attr = {.name = "average_perf", .mode = S_IRUGO },
+	.show = queue_avg_perf_show,
+};
+
+static struct queue_sysfs_entry queue_hw_inflight_entry = {
+	.attr = {.name = "hw_inflight", .mode = S_IRUGO },
+	.show = queue_hw_inflight_show,
+};
+
+static struct queue_sysfs_entry queue_max_bg_depth_entry = {
+	.attr = {.name = "max_bg_depth", .mode = S_IRUGO | S_IWUSR },
+	.show = queue_max_bg_depth_show,
+	.store = queue_max_bg_depth_store,
+};
 
 static struct attribute *default_attrs[] = {
 	&queue_requests_entry.attr,
@@ -716,13 +872,21 @@ static struct attribute *default_attrs[] = {
 	&queue_iostats_entry.attr,
 	&queue_random_entry.attr,
 	&queue_poll_entry.attr,
+#ifdef CONFIG_ROW_VIP_QUEUE
+	&queue_qos_entry.attr,
+#endif
 	&queue_wc_entry.attr,
 	&queue_dax_entry.attr,
 	&queue_wb_lat_entry.attr,
+	&queue_wb_mode_entry.attr,
 	&queue_poll_delay_entry.attr,
+	&queue_inline_crypt_entry.attr,
 #ifdef CONFIG_BLK_DEV_THROTTLING_LOW
 	&throtl_sample_time_entry.attr,
 #endif
+	&queue_avg_perf_entry.attr,
+	&queue_hw_inflight_entry.attr,
+	&queue_max_bg_depth_entry.attr,
 	NULL,
 };
 

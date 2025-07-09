@@ -253,6 +253,12 @@ static void bio_free(struct bio *bio)
 
 	bio_uninit(bio);
 
+	if (bio->bi_crypt_ctx.bc_info_act) {
+		bio->bi_crypt_ctx.bc_info_act(
+			bio->bi_crypt_ctx.bc_info,
+			BIO_BC_INFO_PUT);
+	}
+
 	if (bs) {
 		bvec_free(bs->bvec_pool, bio->bi_io_vec, BVEC_POOL_IDX(bio));
 
@@ -577,6 +583,24 @@ inline int bio_phys_segments(struct request_queue *q, struct bio *bio)
 }
 EXPORT_SYMBOL(bio_phys_segments);
 
+static inline void bio_clone_crypt_info(struct bio *dst, const struct bio *src)
+{
+	/* for HIE */
+	dst->bi_crypt_ctx = src->bi_crypt_ctx;
+
+	if (src->bi_crypt_ctx.bc_info) {
+		src->bi_crypt_ctx.bc_info_act(
+		  src->bi_crypt_ctx.bc_info,
+		  BIO_BC_INFO_GET);
+	}
+
+#if defined(CONFIG_MTK_HW_FDE)
+	/* for FDE */
+	dst->bi_hw_fde = src->bi_hw_fde;
+	dst->bi_key_idx = src->bi_key_idx;
+#endif
+}
+
 /**
  * 	__bio_clone_fast - clone a bio that shares the original bio's biovec
  * 	@bio: destination bio
@@ -606,6 +630,8 @@ void __bio_clone_fast(struct bio *bio, struct bio *bio_src)
 	bio->bi_iter = bio_src->bi_iter;
 	bio->bi_io_vec = bio_src->bi_io_vec;
 
+	bio_clone_crypt_info(bio, bio_src);
+
 	bio_clone_blkcg_association(bio, bio_src);
 }
 EXPORT_SYMBOL(__bio_clone_fast);
@@ -616,7 +642,7 @@ EXPORT_SYMBOL(__bio_clone_fast);
  *	@gfp_mask: allocation priority
  *	@bs: bio_set to allocate from
  *
- * 	Like __bio_clone_fast, only also allocates the returned bio
+ *	Like __bio_clone_fast, only also allocates the returned bio
  */
 struct bio *bio_clone_fast(struct bio *bio, gfp_t gfp_mask, struct bio_set *bs)
 {
@@ -713,6 +739,8 @@ struct bio *bio_clone_bioset(struct bio *bio_src, gfp_t gfp_mask,
 			return NULL;
 		}
 	}
+
+	bio_clone_crypt_info(bio, bio_src);
 
 	bio_clone_blkcg_association(bio, bio_src);
 
@@ -1033,6 +1061,9 @@ void bio_advance(struct bio *bio, unsigned bytes)
 		bio_integrity_advance(bio, bytes);
 
 	bio_advance_iter(bio, &bio->bi_iter, bytes);
+
+	/* also advance bc_iv for HIE */
+	bio->bi_crypt_ctx.bc_iv += (bytes >> PAGE_SHIFT);
 }
 EXPORT_SYMBOL(bio_advance);
 
@@ -1911,9 +1942,17 @@ again:
 		bio_clear_flag(bio, BIO_TRACE_COMPLETION);
 	}
 
+#ifdef CONFIG_BLK_DEV_THROTTLING
+	if (bio->bi_throtl_end_io2)
+		bio->bi_throtl_end_io2(bio);
+
+	if (bio->bi_throtl_end_io1)
+		bio->bi_throtl_end_io1(bio);
+#endif
 	blk_throtl_bio_endio(bio);
 	/* release cgroup info */
 	bio_uninit(bio);
+
 	if (bio->bi_end_io)
 		bio->bi_end_io(bio);
 }
@@ -2167,6 +2206,26 @@ void bio_clone_blkcg_association(struct bio *dst, struct bio *src)
 }
 EXPORT_SYMBOL_GPL(bio_clone_blkcg_association);
 #endif /* CONFIG_BLK_CGROUP */
+
+unsigned long bio_bc_iv_get(struct bio *bio)
+{
+	if (bio_bcf_test(bio, BC_IV_CTX))
+		return bio->bi_crypt_ctx.bc_iv;
+
+	if (bio_bcf_test(bio, BC_IV_PAGE_IDX)) {
+		struct page *p;
+
+		p = bio_page(bio);
+#ifdef CONFIG_IOCACHE
+		if (p && bio_bcf_test(bio, BC_BIO_FROM_IOCACHE))
+			return iocache_page_key_org_idx(p);
+#endif
+		if (p && page_mapping(p))
+			return page_index(p);
+	}
+	return BC_INVALID_IV;
+}
+EXPORT_SYMBOL_GPL(bio_bc_iv_get);
 
 static void __init biovec_init_slabs(void)
 {

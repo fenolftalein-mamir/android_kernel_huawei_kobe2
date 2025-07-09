@@ -34,6 +34,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/blk-cgroup.h>
 #include <linux/debugfs.h>
+#include <mt-plat/mtk_blocktag.h> /* MTK PATCH */
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/block.h>
@@ -45,6 +46,10 @@
 
 #ifdef CONFIG_DEBUG_FS
 struct dentry *blk_debugfs_root;
+#endif
+
+#ifdef CONFIG_ROW_VIP_QUEUE
+extern int get_task_qos(struct task_struct *task);
 #endif
 
 EXPORT_TRACEPOINT_SYMBOL_GPL(block_bio_remap);
@@ -115,6 +120,7 @@ void blk_rq_init(struct request_queue *q, struct request *rq)
 	memset(rq, 0, sizeof(*rq));
 
 	INIT_LIST_HEAD(&rq->queuelist);
+	INIT_LIST_HEAD(&rq->fg_bg_list);
 	INIT_LIST_HEAD(&rq->timeout_list);
 	rq->cpu = -1;
 	rq->q = q;
@@ -861,6 +867,8 @@ struct request_queue *blk_alloc_queue_node(gfp_t gfp_mask, int node_id)
 	setup_timer(&q->timeout, blk_rq_timed_out_timer, (unsigned long) q);
 	INIT_WORK(&q->timeout_work, NULL);
 	INIT_LIST_HEAD(&q->queue_head);
+	INIT_LIST_HEAD(&q->fg_head);
+	INIT_LIST_HEAD(&q->bg_head);
 	INIT_LIST_HEAD(&q->timeout_list);
 	INIT_LIST_HEAD(&q->icq_list);
 #ifdef CONFIG_BLK_CGROUP
@@ -1002,6 +1010,9 @@ int blk_init_allocated_queue(struct request_queue *q)
 
 	INIT_WORK(&q->timeout_work, blk_timeout_work);
 	q->queue_flags		|= QUEUE_FLAG_DEFAULT;
+#ifdef CONFIG_ROW_VIP_QUEUE
+	queue_flag_set(QUEUE_FLAG_QOS, q);
+#endif
 
 	/*
 	 * This also sets hw/phys segments, boundary and size
@@ -1577,7 +1588,8 @@ void __blk_put_request(struct request_queue *q, struct request *req)
 	/* this is a bio leak */
 	WARN_ON(req->bio != NULL);
 
-	wbt_done(q->rq_wb, &req->issue_stat);
+	wbt_done(q->rq_wb, &req->issue_stat,
+		 (bool)(req->cmd_flags & REQ_FG));
 
 	/*
 	 * Request may not have originated from ll_rw_blk. if not,
@@ -1870,6 +1882,14 @@ static blk_qc_t blk_queue_bio(struct request_queue *q, struct bio *bio)
 get_rq:
 	wb_acct = wbt_wait(q->rq_wb, bio, q->queue_lock);
 
+#ifdef CONFIG_ROW_VIP_QUEUE
+	if (blk_queue_qos_on(bio->bi_disk->queue)) {
+		int qos = get_task_qos(current);
+		if ((qos >= BLKIO_QOS_HIGH) || (bio->bi_opf & (REQ_META | REQ_PRIO)))
+			bio->bi_opf |= (REQ_FG | REQ_VIP);
+	}
+#endif
+
 	/*
 	 * Grab a free request. This is might sleep but can not fail.
 	 * Returns with the queue unlocked.
@@ -2037,6 +2057,59 @@ static inline int bio_check_eod(struct bio *bio, unsigned int nr_sectors)
 	return 0;
 }
 
+#define UPDATE_TIME (HZ / 2)
+static void blk_update_perf(struct request_queue *q,
+	struct hd_struct *p)
+{
+	unsigned long now = jiffies;
+	unsigned long last = q->bw_timestamp;
+	sector_t read_sect, write_sect, tmp_sect;
+	unsigned long read_ios, write_ios, tmp_ios;
+	unsigned long current_ticks;
+	unsigned long busy_ticks;
+
+	if (time_before(now, last + UPDATE_TIME))
+		return;
+
+	if (cmpxchg(&q->bw_timestamp, last, now) != last)
+		return;
+
+	tmp_sect = part_stat_read(p, sectors[READ]);
+	read_sect = tmp_sect - q->last_sects[READ];
+	q->last_sects[READ] = tmp_sect;
+	tmp_sect = part_stat_read(p, sectors[WRITE]);
+	write_sect = tmp_sect - q->last_sects[WRITE];
+	q->last_sects[WRITE] = tmp_sect;
+
+	tmp_ios = part_stat_read(p, ios[READ]);
+	read_ios = tmp_ios - q->last_ios[READ];
+	q->last_ios[READ] = tmp_ios;
+	tmp_ios = part_stat_read(p, ios[WRITE]);
+	write_ios = tmp_ios - q->last_ios[WRITE];
+	q->last_ios[WRITE] = tmp_ios;
+
+	current_ticks = part_stat_read(p, io_ticks);
+	busy_ticks = current_ticks - q->last_ticks;
+	q->last_ticks = current_ticks;
+
+	/* Don't account for long idle */
+	if (now - last > UPDATE_TIME * 2)
+		return;
+	/* Disk load is too low or driver doesn't account io_ticks */
+	if (busy_ticks == 0)
+		return;
+
+	if (busy_ticks > now - last)
+		busy_ticks = now - last;
+
+	tmp_sect = (read_sect + write_sect) * HZ;
+	sector_div(tmp_sect, busy_ticks);
+	q->disk_bw = tmp_sect;
+
+	tmp_ios = (read_ios + write_ios) * HZ / busy_ticks;
+	q->disk_iops = tmp_ios;
+}
+
 static noinline_for_stack bool
 generic_make_request_checks(struct bio *bio)
 {
@@ -2123,6 +2196,8 @@ generic_make_request_checks(struct bio *bio)
 	 * layer knows how to live with it.
 	 */
 	create_io_context(GFP_ATOMIC, q->node);
+
+	blk_update_perf(q, &bio->bi_disk->part0);
 
 	if (!blkcg_bio_issue_check(q, bio))
 		return false;
@@ -2288,6 +2363,9 @@ blk_qc_t submit_bio(struct bio *bio)
 			count_vm_events(PGPGIN, count);
 		}
 
+#ifdef CONFIG_MTK_BLOCK_TAG
+		mtk_btag_pidlog_submit_bio(bio);
+#endif
 		if (unlikely(block_dump)) {
 			char b[BDEVNAME_SIZE];
 			printk(KERN_DEBUG "%s(%d): %s block %Lu on %s (%u sectors)\n",
@@ -2648,6 +2726,7 @@ static void blk_dequeue_request(struct request *rq)
 	BUG_ON(ELV_ON_HASH(rq));
 
 	list_del_init(&rq->queuelist);
+	list_del_init(&rq->fg_bg_list);
 
 	/*
 	 * the time frame between a request being removed from the lists
@@ -2656,6 +2735,7 @@ static void blk_dequeue_request(struct request *rq)
 	 */
 	if (blk_account_rq(rq)) {
 		q->in_flight[rq_is_sync(rq)]++;
+		queue_throtl_add_inflight(q, rq);
 		set_io_start_time_ns(rq);
 	}
 }
@@ -2678,7 +2758,8 @@ void blk_start_request(struct request *req)
 	if (test_bit(QUEUE_FLAG_STATS, &req->q->queue_flags)) {
 		blk_stat_set_issue(&req->issue_stat, blk_rq_sectors(req));
 		req->rq_flags |= RQF_STATS;
-		wbt_issue(req->q->rq_wb, &req->issue_stat);
+		wbt_issue(req->q->rq_wb, &req->issue_stat,
+			  (bool)(req->cmd_flags & REQ_FG));
 	}
 
 	BUG_ON(test_bit(REQ_ATOM_COMPLETE, &req->atomic_flags));
@@ -2876,7 +2957,8 @@ void blk_finish_request(struct request *req, blk_status_t error)
 	blk_account_io_done(req);
 
 	if (req->end_io) {
-		wbt_done(req->q->rq_wb, &req->issue_stat);
+		wbt_done(req->q->rq_wb, &req->issue_stat,
+			 (bool)(req->cmd_flags & REQ_FG));
 		req->end_io(req, error);
 	} else {
 		if (blk_bidi_rq(req))

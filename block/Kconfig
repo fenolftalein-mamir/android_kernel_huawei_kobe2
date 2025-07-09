@@ -128,6 +128,14 @@ config BLK_DEV_THROTTLING_LOW
 
 	Note, this is an experimental interface and could be changed someday.
 
+config BLK_DEV_HI_PRIO_FOR_FG
+	bool "Block layer high priority for foreground requests support"
+	depends on BLK_DEV_THROTTLING=y
+	default n
+	---help---
+	Give high priority for foreground requests, reserve some tags for
+	forground requests to make sure these requests have low lantency.
+
 config BLK_CMDLINE_PARSER
 	bool "Block device command line partition parser"
 	default n
