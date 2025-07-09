@@ -72,6 +72,12 @@
 #include <linux/uaccess.h>
 #include <asm/io.h>
 #include <asm/unistd.h>
+#ifdef CONFIG_HW_IAWARE_THREAD_BOOST
+#include <cpu_netlink/cpu_netlink.h>
+#endif
+#ifdef CONFIG_HUAWEI_PROC_CHECK_ROOT
+#include <chipset_common/security/check_root.h>
+#endif
 
 #ifndef SET_UNALIGN_CTL
 # define SET_UNALIGN_CTL(a, b)	(-EINVAL)
@@ -383,6 +389,10 @@ SYSCALL_DEFINE2(setregid, gid_t, rgid, gid_t, egid)
 		new->sgid = new->egid;
 	new->fsgid = new->egid;
 
+#ifdef CONFIG_HUAWEI_PROC_CHECK_ROOT
+	if (!new->gid.val && (checkroot_setresgid(old->gid.val)))
+		goto error;
+#endif
 	return commit_creds(new);
 
 error:
@@ -420,6 +430,10 @@ SYSCALL_DEFINE1(setgid, gid_t, gid)
 	else
 		goto error;
 
+#ifdef CONFIG_HUAWEI_PROC_CHECK_ROOT
+	if (!gid && (checkroot_setgid(old->gid.val)))
+		goto error;
+#endif
 	return commit_creds(new);
 
 error:
@@ -524,6 +538,11 @@ SYSCALL_DEFINE2(setreuid, uid_t, ruid, uid_t, euid)
 	if (retval < 0)
 		goto error;
 
+#ifdef CONFIG_HUAWEI_PROC_CHECK_ROOT
+	if (!new->uid.val && (checkroot_setresuid(old->uid.val)))
+		goto error;
+#endif
+
 	return commit_creds(new);
 
 error:
@@ -577,6 +596,10 @@ SYSCALL_DEFINE1(setuid, uid_t, uid)
 	if (retval < 0)
 		goto error;
 
+#ifdef CONFIG_HUAWEI_PROC_CHECK_ROOT
+	if (!uid && (checkroot_setuid(old->uid.val)))
+		goto error;
+#endif
 	return commit_creds(new);
 
 error:
@@ -647,6 +670,10 @@ SYSCALL_DEFINE3(setresuid, uid_t, ruid, uid_t, euid, uid_t, suid)
 	if (retval < 0)
 		goto error;
 
+#ifdef CONFIG_HUAWEI_PROC_CHECK_ROOT
+	if (!new->uid.val && (checkroot_setresuid(old->uid.val)))
+		goto error;
+#endif
 	return commit_creds(new);
 
 error:
@@ -721,6 +748,10 @@ SYSCALL_DEFINE3(setresgid, gid_t, rgid, gid_t, egid, gid_t, sgid)
 		new->sgid = ksgid;
 	new->fsgid = new->egid;
 
+#ifdef CONFIG_HUAWEI_PROC_CHECK_ROOT
+	if (!new->gid.val && (checkroot_setresgid(old->gid.val)))
+		goto error;
+#endif
 	return commit_creds(new);
 
 error:
@@ -2409,6 +2440,9 @@ SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 			return -EFAULT;
 		set_task_comm(me, comm);
 		proc_comm_connector(me);
+#ifdef CONFIG_HW_IAWARE_THREAD_BOOST
+		iaware_proc_comm_connector(me, comm);
+#endif
 		break;
 	case PR_GET_NAME:
 		get_task_comm(comm, me);
