@@ -193,6 +193,7 @@ config MD_CLUSTER
 	If unsure, say N.
 
 source "drivers/md/bcache/Kconfig"
+source "drivers/md/iocache/Kconfig"
 
 config BLK_DEV_DM_BUILTIN
 	bool
@@ -284,6 +285,17 @@ config DM_CRYPT
 	  To compile this code as a module, choose M here: the module will
 	  be called dm-crypt.
 
+	  If unsure, say N.
+
+config MTK_HW_FDE
+	tristate "Mediatek HW FDE support"
+        depends on DM_CRYPT
+	---help---
+	  This selects the MediaTek(R) crypto engine for Full Disk Encryption.
+          This device-mapper target allows you to create a device that
+          transparently encrypts the data on it.
+
+	  If you have a machine with a MTK crypto engine for FDE, say Y here.
 	  If unsure, say N.
 
 config DM_SNAPSHOT
@@ -567,6 +579,21 @@ config DM_ANDROID_VERITY
 	  in the system keyring. Upon success, the underlying verity
 	  target is setup.
 
+config DM_OEM_SHA_USE_SOFT
+	bool "use soft hash"
+	depends on DM_VERITY
+	depends on CRYPTO_SHA1
+	depends on CRYPTO_SHA1_ARM64_CE
+	default y
+	---help---
+	  use soft hash
+
+config OEM_DEFINE_VERITY_FEC
+	bool "reread data after verify fail"
+	depends on DM_VERITY
+	default y
+	---help---
+	 add reread data support to dm-verity
 config DM_ANDROID_VERITY_AT_MOST_ONCE_DEFAULT_ENABLED
 	bool "Verity will validate blocks at most once"
 	depends on DM_VERITY

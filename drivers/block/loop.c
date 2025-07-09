@@ -1605,6 +1605,8 @@ static int lo_compat_ioctl(struct block_device *bdev, fmode_t mode,
 		arg = (unsigned long) compat_ptr(arg);
 	case LOOP_SET_FD:
 	case LOOP_CHANGE_FD:
+	case LOOP_SET_BLOCK_SIZE:
+	case LOOP_SET_DIRECT_IO:
 		err = lo_ioctl(bdev, mode, cmd, arg);
 		break;
 	default:
@@ -1823,6 +1825,11 @@ static int loop_add(struct loop_device **l, int i)
 	if (err < 0)
 		goto out_free_dev;
 	i = err;
+
+	if (i >= (int)(1UL << (MINORBITS - part_shift))) {
+		err = -ERANGE;
+		goto out_free_idr;
+	}
 
 	err = -ENOMEM;
 	lo->tag_set.ops = &loop_mq_ops;

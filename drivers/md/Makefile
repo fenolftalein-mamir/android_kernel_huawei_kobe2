@@ -2,6 +2,9 @@
 #
 # Makefile for the kernel software RAID and LVM drivers.
 #
+ifeq ($(CONFIG_MTK_HW_FDE),y)
+ccflags-y 	+= -I$(srctree)/drivers/misc/mediatek/include
+endif
 
 dm-mod-y	+= dm.o dm-table.o dm-target.o dm-linear.o dm-stripe.o \
 		   dm-ioctl.o dm-io.o dm-kcopyd.o dm-sysfs.o dm-stats.o \
@@ -19,6 +22,9 @@ dm-cache-y	+= dm-cache-target.o dm-cache-metadata.o dm-cache-policy.o \
 dm-cache-smq-y   += dm-cache-policy-smq.o
 dm-era-y	+= dm-era-target.o
 dm-verity-y	+= dm-verity-target.o
+ifeq ($(CONFIG_OEM_DEFINE_VERITY_FEC),y)
+dm-verity-y     += verity_handle_4.14.o
+endif
 md-mod-y	+= md.o bitmap.o
 raid456-y	+= raid5.o raid5-cache.o raid5-ppl.o
 dm-zoned-y	+= dm-zoned-target.o dm-zoned-metadata.o dm-zoned-reclaim.o
@@ -37,6 +43,7 @@ obj-$(CONFIG_MD_MULTIPATH)	+= multipath.o
 obj-$(CONFIG_MD_FAULTY)		+= faulty.o
 obj-$(CONFIG_MD_CLUSTER)	+= md-cluster.o
 obj-$(CONFIG_BCACHE)		+= bcache/
+obj-$(CONFIG_IOCACHE)		+= iocache/
 obj-$(CONFIG_BLK_DEV_MD)	+= md-mod.o
 obj-$(CONFIG_BLK_DEV_DM)	+= dm-mod.o
 obj-$(CONFIG_BLK_DEV_DM_BUILTIN) += dm-builtin.o

@@ -3,6 +3,8 @@ config ZRAM
 	tristate "Compressed RAM block device support"
 	depends on BLOCK && SYSFS && ZSMALLOC && CRYPTO
 	select CRYPTO_LZO
+	select CRYPTO_LZ4
+	select CRYPTO_LZ4M
 	default n
 	help
 	  Creates virtual block devices called /dev/zramX (X = 0, 1, ...).
@@ -39,3 +41,17 @@ config ZRAM_MEMORY_TRACKING
 	  /sys/kernel/debug/zram/zramX/block_state.
 
 	  See Documentation/blockdev/zram.txt for more information.
+
+config ZRAM_DEDUP
+	bool "Memory deduplication"
+	depends on ZRAM
+	help
+	  With this feature, zram could deduplicate the objects with the same
+	  context. Admin could see the information via
+	  /sys/block/zramX/mm_stat.
+config ZRAM_NON_COMPRESS
+	bool "zram non compress"
+	depends on ZRAM
+	help
+	  With this feature, zram will not compress page that with NonCompress
+	  flag.

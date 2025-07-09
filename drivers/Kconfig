@@ -77,6 +77,8 @@ source "drivers/hwmon/Kconfig"
 
 source "drivers/thermal/Kconfig"
 
+source "drivers/trusty/Kconfig"
+
 source "drivers/watchdog/Kconfig"
 
 source "drivers/ssb/Kconfig"
@@ -100,6 +102,8 @@ source "drivers/usb/Kconfig"
 source "drivers/uwb/Kconfig"
 
 source "drivers/mmc/Kconfig"
+
+source "drivers/iomt_host/Kconfig"
 
 source "drivers/memstick/Kconfig"
 
@@ -144,6 +148,8 @@ source "drivers/clk/Kconfig"
 source "drivers/hwspinlock/Kconfig"
 
 source "drivers/clocksource/Kconfig"
+
+source "drivers/cpuload/Kconfig"
 
 source "drivers/mailbox/Kconfig"
 
@@ -209,4 +215,41 @@ source "drivers/tee/Kconfig"
 
 source "drivers/mux/Kconfig"
 
+source "drivers/hwmanufac/Kconfig"
+
+source "drivers/dsm/Kconfig"
+
+source "drivers/log/Kconfig"
+
+source "drivers/storage_rofa/Kconfig"
+
+source "drivers/mmonitor/Kconfig"
+
+source "drivers/devkit/audiokit/Kconfig"
+
+source "drivers/huawei_platform/Kconfig"
+
+source "drivers/hwbfm/Kconfig"
+
+source "drivers/devkit/lcdkit/Kconfig"
+
+source "drivers/tzdriver/Kconfig"
+
+source "drivers/devkit/tpkit/Kconfig"
+
+source "drivers/hwnet/Kconfig"
+
+source "drivers/hwfdleak/Kconfig"
+
+source "drivers/hwusb/Kconfig"
+
+source "drivers/hwzerohung/Kconfig"
+
+source "drivers/iotrace/Kconfig"
+
+source "drivers/oeminfo/Kconfig"
+
+source "drivers/cfi/Kconfig"
+
+source "drivers/booster/Kconfig"
 endmenu

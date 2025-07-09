@@ -502,8 +502,11 @@ static int evdev_open(struct inode *inode, struct file *file)
 	struct evdev_client *client;
 	int error;
 
-	client = kzalloc(size, GFP_KERNEL | __GFP_NOWARN);
-	if (!client)
+	if (size > (PAGE_SIZE << 1))
+		client = vzalloc(size);
+	else
+		client = kzalloc(size, GFP_KERNEL | __GFP_NOWARN);
+	if (!client && (size > PAGE_SIZE))
 		client = vzalloc(size);
 	if (!client)
 		return -ENOMEM;

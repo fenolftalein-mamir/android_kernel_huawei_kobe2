@@ -28,9 +28,20 @@
 #include <linux/file.h>
 #include <linux/fs.h>
 #include <linux/usb/composite.h>
+#include <uapi/linux/usb/ch9.h>
 
 #include "storage_common.h"
 
+#ifdef CONFIG_USBIF_COMPLIANCE
+static struct usb_otg20_descriptor
+fsg_otg_desc = {
+	.bLength = sizeof(fsg_otg_desc),
+	.bDescriptorType = USB_DT_OTG,
+	/* OTG 2.0: */
+	.bmAttributes =	USB_OTG_SRP | USB_OTG_HNP,
+	.bcdOTG = cpu_to_le16(0x200),
+};
+#endif
 /* There is only one interface. */
 
 struct usb_interface_descriptor fsg_intf_desc = {
@@ -71,6 +82,9 @@ struct usb_endpoint_descriptor fsg_fs_bulk_out_desc = {
 EXPORT_SYMBOL_GPL(fsg_fs_bulk_out_desc);
 
 struct usb_descriptor_header *fsg_fs_function[] = {
+#ifdef CONFIG_USBIF_COMPLIANCE
+	(struct usb_descriptor_header *) &fsg_otg_desc,
+#endif
 	(struct usb_descriptor_header *) &fsg_intf_desc,
 	(struct usb_descriptor_header *) &fsg_fs_bulk_in_desc,
 	(struct usb_descriptor_header *) &fsg_fs_bulk_out_desc,
@@ -108,6 +122,9 @@ EXPORT_SYMBOL_GPL(fsg_hs_bulk_out_desc);
 
 
 struct usb_descriptor_header *fsg_hs_function[] = {
+#ifdef CONFIG_USBIF_COMPLIANCE
+	(struct usb_descriptor_header *) &fsg_otg_desc,
+#endif
 	(struct usb_descriptor_header *) &fsg_intf_desc,
 	(struct usb_descriptor_header *) &fsg_hs_bulk_in_desc,
 	(struct usb_descriptor_header *) &fsg_hs_bulk_out_desc,
@@ -152,6 +169,9 @@ struct usb_ss_ep_comp_descriptor fsg_ss_bulk_out_comp_desc = {
 EXPORT_SYMBOL_GPL(fsg_ss_bulk_out_comp_desc);
 
 struct usb_descriptor_header *fsg_ss_function[] = {
+#ifdef CONFIG_USBIF_COMPLIANCE
+	(struct usb_descriptor_header *) &fsg_otg_desc,
+#endif
 	(struct usb_descriptor_header *) &fsg_intf_desc,
 	(struct usb_descriptor_header *) &fsg_ss_bulk_in_desc,
 	(struct usb_descriptor_header *) &fsg_ss_bulk_in_comp_desc,
@@ -435,14 +455,44 @@ ssize_t fsg_store_nofua(struct fsg_lun *curlun, const char *buf, size_t count)
 }
 EXPORT_SYMBOL_GPL(fsg_store_nofua);
 
+#define ENABLE    1
+#define DISABLE   0
+#define LEN       4
 ssize_t fsg_store_file(struct fsg_lun *curlun, struct rw_semaphore *filesem,
 		       const char *buf, size_t count)
 {
 	int		rc = 0;
+	static int cdrom;
+	bool needclose = true;
+
+	if (!curlun || !filesem || !buf)
+		return -EINVAL;
 
 	if (curlun->prevent_medium_removal && fsg_lun_is_open(curlun)) {
 		LDBG(curlun, "eject attempt prevented\n");
 		return -EBUSY;				/* "Door is locked" */
+	}
+	pr_notice("%s file=%s, count=%d, curlun->cdrom=%d\n",
+			__func__, buf, (int)count, curlun->cdrom);
+
+	/*
+	 * WORKAROUND:VOLD would clean the file path after switching to bicr.
+	 * So when the lun is being a CD-ROM a.k.a. BICR.
+	 * Dont clean the file path to empty.
+	 */
+	if (curlun->cdrom == 1 && count == 1)
+		return count;
+
+	/*
+	 * WORKAROUND:Should be closed the fsg lun for virtual cd-rom,
+	 * when switch to other usb functions.
+	 * Use the special keyword "off", because the init can
+	 * not parse the char '\n' in rc file and write into the sysfs.
+	 */
+	if (count == 3 &&
+			buf[0] == 'o' && buf[1] == 'f' && buf[2] == 'f' &&
+			fsg_lun_is_open(curlun)) {
+		((char *) buf)[0] = 0;
 	}
 
 	/* Remove a trailing newline */
@@ -457,9 +507,48 @@ ssize_t fsg_store_file(struct fsg_lun *curlun, struct rw_semaphore *filesem,
 		if (rc == 0)
 			curlun->unit_attention_data =
 					SS_NOT_READY_TO_READY_TRANSITION;
+
+		pr_info("%s: count=%zu, buf=%pK, curlun=%pK\n",
+			__func__, count, buf, curlun);
+		if (count >= LEN &&
+			memcmp(&(buf[count - LEN]), ".iso", LEN) == 0) {
+			pr_info("buf = %s, buf[count - LEN] = %s\n",
+				buf, &buf[count - LEN]);
+			curlun->cdrom = ENABLE;
+			curlun->ro = ENABLE;
+			curlun->removable = ENABLE;
+			curlun->nofua = ENABLE;
+			cdrom = ENABLE;
+		} else if (count == strlen("none") &&
+			memcmp(buf, "none", strlen("none")) == 0) {
+			curlun->cdrom = ENABLE;
+			curlun->ro = ENABLE;
+			curlun->removable = ENABLE;
+			curlun->nofua = ENABLE;
+			cdrom = DISABLE;
+			if (fsg_lun_is_open(curlun)) {
+				fsg_lun_close(curlun);
+				curlun->unit_attention_data =
+					SS_MEDIUM_NOT_PRESENT;
+			}
+		} else {
+			curlun->cdrom = DISABLE;
+			curlun->ro = DISABLE;
+			curlun->removable = ENABLE;
+			curlun->nofua = ENABLE;
+			cdrom = DISABLE;
+		}
 	} else if (fsg_lun_is_open(curlun)) {
-		fsg_lun_close(curlun);
-		curlun->unit_attention_data = SS_MEDIUM_NOT_PRESENT;
+		if (cdrom == ENABLE) {
+			if (count == LEN && memcmp(buf, "none", LEN) == 0)
+				needclose = true;
+			else
+				needclose = false;
+		}
+		if (needclose) {
+			fsg_lun_close(curlun);
+			curlun->unit_attention_data = SS_MEDIUM_NOT_PRESENT;
+		}
 	}
 	up_write(filesem);
 	return (rc < 0 ? rc : count);

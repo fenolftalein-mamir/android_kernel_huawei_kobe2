@@ -268,8 +268,14 @@ static void sg_clean(struct usb_sg_request *io)
 
 static void sg_complete(struct urb *urb)
 {
-	struct usb_sg_request *io = urb->context;
-	int status = urb->status;
+	struct usb_sg_request *io = NULL;
+	int status;
+
+	if (!urb)
+		return;
+
+	io = urb->context;
+	status = urb->status;
 
 	spin_lock(&io->lock);
 
@@ -586,12 +592,13 @@ void usb_sg_cancel(struct usb_sg_request *io)
 	int i, retval;
 
 	spin_lock_irqsave(&io->lock, flags);
-	if (io->status) {
+	if (io->status || io->count == 0) {
 		spin_unlock_irqrestore(&io->lock, flags);
 		return;
 	}
 	/* shut everything down */
 	io->status = -ECONNRESET;
+	io->count++; /* Keep the request alive until we're done */
 	spin_unlock_irqrestore(&io->lock, flags);
 
 	for (i = io->entries - 1; i >= 0; --i) {
@@ -605,6 +612,12 @@ void usb_sg_cancel(struct usb_sg_request *io)
 			dev_warn(&io->dev->dev, "%s, unlink --> %d\n",
 				 __func__, retval);
 	}
+
+	spin_lock_irqsave(&io->lock, flags);
+	io->count--;
+	if (!io->count)
+		complete(&io->complete);
+	spin_unlock_irqrestore(&io->lock, flags);
 }
 EXPORT_SYMBOL_GPL(usb_sg_cancel);
 

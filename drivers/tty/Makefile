@@ -35,5 +35,5 @@ obj-$(CONFIG_GOLDFISH_TTY)	+= goldfish.o
 obj-$(CONFIG_DA_TTY)		+= metag_da.o
 obj-$(CONFIG_MIPS_EJTAG_FDC_TTY) += mips_ejtag_fdc.o
 obj-$(CONFIG_VCC)		+= vcc.o
-
+obj-$(CONFIG_HANDSET_SYSRQ_RESET) += sysrq_key/
 obj-y += ipwireless/

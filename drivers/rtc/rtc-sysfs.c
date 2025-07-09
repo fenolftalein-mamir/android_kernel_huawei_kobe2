@@ -247,6 +247,41 @@ offset_store(struct device *dev, struct device_attribute *attr,
 }
 static DEVICE_ATTR_RW(offset);
 
+bool mtk_disable_rtc=false;
+extern void hal_rtc_dis_alarm(void);
+static ssize_t dis_rtc_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	ssize_t retval;
+
+
+	retval = sprintf(buf, "rtc disable?%d\n", mtk_disable_rtc);
+
+	return retval;
+}
+
+static ssize_t
+dis_rtc_store(struct device *dev, struct device_attribute *attr,
+	     const char *buf, size_t n)
+{
+	ssize_t retval;
+	long offset;
+
+	retval = kstrtol(buf, 10, &offset);
+	if(1==offset)
+	{
+		mtk_disable_rtc=true;
+		hal_rtc_dis_alarm();
+	}
+
+	if(0==offset)
+	{
+		mtk_disable_rtc=false;
+	}
+
+	return (retval < 0) ? retval : n;
+}
+static DEVICE_ATTR_RW(dis_rtc);
+
 static struct attribute *rtc_attrs[] = {
 	&dev_attr_name.attr,
 	&dev_attr_date.attr,
@@ -256,6 +291,7 @@ static struct attribute *rtc_attrs[] = {
 	&dev_attr_hctosys.attr,
 	&dev_attr_wakealarm.attr,
 	&dev_attr_offset.attr,
+	&dev_attr_dis_rtc.attr,
 	NULL,
 };
 

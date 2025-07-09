@@ -17,6 +17,11 @@
 #include <linux/pm_wakeirq.h>
 #include <linux/types.h>
 #include <trace/events/power.h>
+#include <linux/proc_fs.h>
+
+#ifdef CONFIG_HUAWEI_DUBAI
+#include <huawei_platform/log/hwlog_kernel.h>
+#endif
 
 #include "power.h"
 
@@ -185,6 +190,99 @@ void wakeup_source_add(struct wakeup_source *ws)
 	spin_unlock_irqrestore(&events_lock, flags);
 }
 EXPORT_SYMBOL_GPL(wakeup_source_add);
+
+#ifdef CONFIG_HUAWEI_KSTATE
+int wakeup_source_set(char *name, u8 lock_timeout)
+{
+	struct wakeup_source *ws = NULL;
+
+	rcu_read_lock();
+	list_for_each_entry_rcu(ws, &wakeup_sources, entry) {
+		if (strcmp(ws->name, name) == 0) {
+			ws->lock_timeout = lock_timeout;
+			pr_info("set wakeup source: %s %d\n",
+				ws->name, lock_timeout);
+			break;
+		}
+	}
+	rcu_read_unlock();
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(wakeup_source_set);
+
+int wakeup_source_set_all(u8 lock_timeout)
+{
+	struct wakeup_source *ws = NULL;
+
+	rcu_read_lock();
+	list_for_each_entry_rcu(ws, &wakeup_sources, entry) {
+		ws->lock_timeout = lock_timeout;
+		pr_info("set wakeup source: %s %d\n",
+			ws->name, lock_timeout);
+		break;
+	}
+	rcu_read_unlock();
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(wakeup_source_set_all);
+
+int wake_unlock_by_name(char *name)
+{
+	struct wakeup_source *ws = NULL;
+	int flag = 0;
+
+	rcu_read_lock();
+	list_for_each_entry_rcu(ws, &wakeup_sources, entry) {
+		if (!strcmp(ws->name, name)) {
+			flag = 1;
+			pr_info("[%s] wakeup source: %s.\n", __func__, name);
+			break;
+		}
+	}
+	rcu_read_unlock();
+
+	if (flag)
+		__pm_relax(ws);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(wake_unlock_by_name);
+
+int wake_unlock_all(unsigned int msec)
+{
+	ktime_t active_time;
+	struct wakeup_source *ws = NULL;
+	const char *whitename = "PowerManagerService.WakeLocks";
+
+	rcu_read_lock();
+	list_for_each_entry_rcu(ws, &wakeup_sources, entry) {
+		if (!strcmp(ws->name, whitename))
+			continue;
+
+		if (!ws->active)
+			continue;
+		if (msec > 0) {
+			ktime_t now = ktime_get();
+
+			active_time = ktime_sub(now, ws->last_time);
+
+			pr_info("[%s]wakeup source: %s %d msec.\n",
+				__func__, ws->name, ktime_to_ms(active_time));
+			if (ktime_to_ms(active_time) <= msec)
+				continue;
+
+		}
+		pr_info("[%s] wakeup source: %s.\n", __func__, ws->name);
+		__pm_relax(ws);
+	}
+	rcu_read_unlock();
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(wake_unlock_all);
+#endif
 
 /**
  * wakeup_source_remove - Remove given object from the wakeup sources list.
@@ -567,6 +665,31 @@ static void wakeup_source_report_event(struct wakeup_source *ws, bool hard)
 		pm_system_wakeup();
 }
 
+#ifdef CONFIG_HUAWEI_DUBAI
+int wakeup_source_getlastingname(char *ws_namelist, int size, int count)
+{
+	struct wakeup_source *ws = NULL;
+	int tmp = 0;
+	int srcuidx;
+
+	if ((!ws_namelist) || (size <= 0))
+		return -EINVAL;
+
+	srcuidx = srcu_read_lock(&wakeup_srcu);
+	list_for_each_entry_rcu(ws, &wakeup_sources, entry) {
+		if (ws->lasting == 1) {
+			if (tmp >= count)
+				break;
+			strncpy(ws_namelist + size * tmp, ws->name, size - 1);
+			tmp++;
+		}
+	}
+	srcu_read_unlock(&wakeup_srcu, srcuidx);
+
+	return tmp;
+}
+EXPORT_SYMBOL_GPL(wakeup_source_getlastingname);
+#endif
 /**
  * __pm_stay_awake - Notify the PM core of a wakeup event.
  * @ws: Wakeup source object associated with the source of the event.
@@ -585,7 +708,9 @@ void __pm_stay_awake(struct wakeup_source *ws)
 	wakeup_source_report_event(ws, false);
 	del_timer(&ws->timer);
 	ws->timer_expires = 0;
-
+#ifdef CONFIG_HUAWEI_DUBAI
+	ws->lasting = 1;
+#endif
 	spin_unlock_irqrestore(&ws->lock, flags);
 }
 EXPORT_SYMBOL_GPL(__pm_stay_awake);
@@ -852,7 +977,7 @@ void pm_print_active_wakeup_sources(void)
 	srcuidx = srcu_read_lock(&wakeup_srcu);
 	list_for_each_entry_rcu(ws, &wakeup_sources, entry) {
 		if (ws->active) {
-			pr_debug("active wakeup source: %s\n", ws->name);
+			pr_info("active wakeup source: %s\n", ws->name);
 			active = 1;
 		} else if (!active &&
 			   (!last_activity_ws ||
@@ -862,9 +987,14 @@ void pm_print_active_wakeup_sources(void)
 		}
 	}
 
-	if (!active && last_activity_ws)
-		pr_debug("last active wakeup source: %s\n",
+	if (!active && last_activity_ws) {
+		pr_info("last active wakeup source: %s\n",
 			last_activity_ws->name);
+#ifdef CONFIG_HUAWEI_DUBAI
+		HWDUBAI_LOGE("DUBAI_TAG_FREEZING_FAILED",
+			"name=%s", last_activity_ws->name);
+#endif
+	}
 	srcu_read_unlock(&wakeup_srcu, srcuidx);
 }
 EXPORT_SYMBOL_GPL(pm_print_active_wakeup_sources);
@@ -1068,6 +1198,52 @@ static int print_wakeup_source_stats(struct seq_file *m,
 	return 0;
 }
 
+static int print_active_wakeup_source(struct seq_file *m,
+				struct wakeup_source *ws)
+{
+	unsigned long flags;
+	ktime_t total_time;
+	ktime_t max_time;
+	unsigned long active_count;
+	ktime_t active_time;
+	ktime_t prevent_sleep_time;
+
+	spin_lock_irqsave(&ws->lock, flags);
+	total_time = ws->total_time;
+	max_time = ws->max_time;
+	prevent_sleep_time = ws->prevent_sleep_time;
+	active_count = ws->active_count;
+	if (ws->active) {
+		ktime_t now = ktime_get();
+
+		active_time = ktime_sub(now, ws->last_time);
+		total_time = ktime_add(total_time, active_time);
+		if (active_time > max_time)
+			max_time = active_time;
+
+		if (ws->autosleep_enabled)
+			prevent_sleep_time = ktime_add(prevent_sleep_time,
+				ktime_sub(now, ws->start_prevent_time));
+	} else {
+		active_time = ktime_set(0, 0);
+	}
+	if (ws->active) {
+		seq_printf(m, "Active resource: %-12s\t%lu\t\t%lu\t\t%lu\t\t"
+			"%lu\t\t%lld\t\t%lld\t\t%lld\t\t%lld\t\t%lld\n",
+			ws->name, active_count, ws->event_count,
+			ws->wakeup_count, ws->expire_count,
+			ktime_to_ms(active_time),
+			ktime_to_ms(total_time),
+			ktime_to_ms(max_time),
+			ktime_to_ms(ws->last_time),
+			ktime_to_ms(prevent_sleep_time));
+	}
+
+	spin_unlock_irqrestore(&ws->lock, flags);
+
+	return 0;
+}
+
 /**
  * wakeup_sources_stats_show - Print wakeup sources statistics information.
  * @m: seq_file to print the statistics into.
@@ -1084,6 +1260,8 @@ static int wakeup_sources_stats_show(struct seq_file *m, void *unused)
 	srcuidx = srcu_read_lock(&wakeup_srcu);
 	list_for_each_entry_rcu(ws, &wakeup_sources, entry)
 		print_wakeup_source_stats(m, ws);
+	list_for_each_entry_rcu(ws, &wakeup_sources, entry)
+		print_active_wakeup_source(m, ws);
 	srcu_read_unlock(&wakeup_srcu, srcuidx);
 
 	print_wakeup_source_stats(m, &deleted_ws);
@@ -1112,3 +1290,12 @@ static int __init wakeup_sources_debugfs_init(void)
 }
 
 postcore_initcall(wakeup_sources_debugfs_init);
+
+static int __init wakeup_sources_proc_init(void)
+{
+	proc_create("wakeup_sources", 0444,
+		(struct proc_dir_entry *)NULL, &wakeup_sources_stats_fops);
+	return 0;
+}
+late_initcall(wakeup_sources_proc_init);
+
