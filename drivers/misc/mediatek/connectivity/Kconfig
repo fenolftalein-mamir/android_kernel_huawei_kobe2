@@ -399,3 +399,10 @@ config HW_SUPPORT_802_11V
 	default n
 	help
 	  This module adds enable 802.11v
+
+config WLAN_DRV_BUILD_IN
+	bool "Build Wlan module in kernel"
+	help
+	  This will build the wlan driver and the corresponding componenets
+	  into the kernel.
+	  If unsure say n
