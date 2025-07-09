@@ -210,6 +210,7 @@ struct ext4_io_submit {
 	struct bio		*io_bio;
 	ext4_io_end_t		*io_end;
 	sector_t		io_next_block;
+	struct inode		*inode;
 };
 
 /*
@@ -1198,7 +1199,9 @@ struct ext4_inode_info {
 #define ext4_find_next_bit		find_next_bit_le
 
 extern void ext4_set_bits(void *bm, int cur, int len);
-
+#ifdef CONFIG_IOCACHE
+extern int iocache_do_drains(bool reachlimit, bool senddiscard, bool try);
+#endif
 /*
  * Maximal mount counts between two filesystem checks
  */
@@ -2580,6 +2583,7 @@ extern int ext4_alloc_flex_bg_array(struct super_block *sb,
 				    ext4_group_t ngroup);
 extern const char *ext4_decode_error(struct super_block *sb, int errno,
 				     char nbuf[16]);
+extern int ext4_set_bio_ctx(struct inode *inode, struct bio *bio);
 
 extern __printf(4, 5)
 void __ext4_error(struct super_block *, const char *, unsigned int,

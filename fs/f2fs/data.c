@@ -17,6 +17,7 @@
 #include <linux/prefetch.h>
 #include <linux/uio.h>
 #include <linux/cleancache.h>
+#include <linux/hie.h>
 #include <linux/sched/signal.h>
 
 #include "f2fs.h"
@@ -94,6 +95,17 @@ static void __read_end_io(struct bio *bio)
 
 		/* PG_error was set if any post_read step failed */
 		if (bio->bi_status || PageError(page)) {
+			printk(KERN_ERR "%s: read IO fault[%d]\n",
+				__func__, bio->bi_status);
+#ifdef CONFIG_HUAWEI_F2FS_DSM
+			 /* report this behavor to DSM */
+			if (f2fs_dclient && !dsm_client_ocuppy(f2fs_dclient)) {
+				dsm_client_record(f2fs_dclient,
+				"%s: read IO fault[%d]\n",
+				__func__, bio->bi_status);
+				dsm_client_notify(f2fs_dclient, DSM_F2FS_NEED_FSCK);
+			}
+#endif
 			ClearPageUptodate(page);
 			/* will re-read again later */
 			ClearPageError(page);
@@ -138,6 +150,9 @@ static void bio_post_read_processing(struct bio_post_read_ctx *ctx)
 
 static bool f2fs_bio_post_read_required(struct bio *bio)
 {
+	if (bio_encrypted(bio))
+		return false;
+
 	return bio->bi_private && !bio->bi_status;
 }
 
@@ -198,8 +213,20 @@ static void f2fs_write_end_io(struct bio *bio)
 
 		if (unlikely(bio->bi_status)) {
 			mapping_set_error(page->mapping, -EIO);
-			if (type == F2FS_WB_CP_DATA)
+			if (type == F2FS_WB_CP_DATA) {
 				f2fs_stop_checkpoint(sbi, true);
+				f2fs_msg(sbi->sb, KERN_ERR, "f2fs reboot for "
+					"bio submit error! erro_num = %d\n",
+					bio->bi_status);
+#ifdef CONFIG_HUAWEI_F2FS_DSM
+				if (f2fs_dclient && !dsm_client_ocuppy(f2fs_dclient)) {
+					dsm_client_record(f2fs_dclient, "F2FS reboot: %s:%d [%d]\n",
+						__func__, __LINE__, bio->bi_status);
+					dsm_client_notify(f2fs_dclient, DSM_F2FS_NEED_FSCK);
+				}
+#endif
+				f2fs_restart(); /* force restarting */
+			}
 		}
 
 		f2fs_bug_on(sbi, page->mapping == NODE_MAPPING(sbi) &&
@@ -294,6 +321,11 @@ static struct bio *__bio_alloc(struct f2fs_sb_info *sbi, block_t blk_addr,
 static inline void __submit_bio(struct f2fs_sb_info *sbi,
 				struct bio *bio, enum page_type type)
 {
+#ifdef CONFIG_BLK_DEV_THROTTLING
+	if (!(current->flags & PF_MUTEX_GC))
+		current->wb_stat.bios++;
+#endif
+
 	if (!is_read_io(bio_op(bio))) {
 		unsigned int start;
 
@@ -345,6 +377,7 @@ static void __f2fs_submit_read_bio(struct f2fs_sb_info *sbi,
 		struct page *first_page = bio->bi_io_vec[0].bv_page;
 
 		if (first_page != NULL &&
+			first_page->mapping != NULL &&
 			__read_io_type(first_page) == F2FS_RD_DATA) {
 			char *path, pathbuf[MAX_TRACE_PATHBUF_LEN];
 
@@ -378,6 +411,7 @@ static void __submit_merged_bio(struct f2fs_bio_info *io)
 	else
 		trace_f2fs_prepare_write_bio(io->sbi->sb, fio->type, io->bio);
 
+	f2fs_set_bio_ctx_fio(fio, io->bio);
 	__submit_bio(io->sbi, io->bio, fio->type);
 	io->bio = NULL;
 }
@@ -511,9 +545,55 @@ int f2fs_submit_page_bio(struct f2fs_io_info *fio)
 	inc_page_count(fio->sbi, is_read_io(fio->op) ?
 			__read_io_type(page): WB_DATA_TYPE(fio->page));
 
+	f2fs_set_bio_ctx_fio(fio, bio);
 	__f2fs_submit_read_bio(fio->sbi, bio, fio->type);
 	return 0;
 }
+
+#ifdef CONFIG_F2FS_FS_ENCRYPTION
+static int f2fs_crypt_bio_not_mergeable(struct bio *bio, struct page *nxt)
+{
+	struct address_space *bio_mapping;
+	struct address_space *nxt_mapping;
+	struct page *p;
+
+	if (!bio || !nxt)
+		return 0;
+
+	p = bio_page(bio);
+
+	if (!p)
+		return 0;
+
+	bio_mapping = page_mapping(p);
+	nxt_mapping = page_mapping(nxt);
+
+	if (bio_mapping && nxt_mapping) {
+		if (!bio_mapping->host || !nxt_mapping->host)
+			return 0;
+
+		/* both not hw encrypted => don't care */
+		if (!fscrypt_is_hw_encrypt(bio_mapping->host) &&
+		    !fscrypt_is_hw_encrypt(nxt_mapping->host))
+			return 0;
+
+		/* different file => don't merge */
+		if (bio_mapping->host->i_ino != nxt_mapping->host->i_ino)
+			return 1;
+
+		/* discontiguous page index => don't merge */
+		if ((p->index + bio_segments(bio)) != (nxt->index))
+			return 1;
+	}
+
+	return 0;
+}
+#else
+static int f2fs_crypt_bio_not_mergeable(struct bio *bio struct page *nxt)
+{
+	return 0;
+}
+#endif
 
 void f2fs_submit_page_write(struct f2fs_io_info *fio)
 {
@@ -553,23 +633,50 @@ next:
 	    (io->fio.op != fio->op || io->fio.op_flags != fio->op_flags) ||
 			!__same_bdev(sbi, fio->new_blkaddr, io->bio)))
 		__submit_merged_bio(io);
+
+	if (f2fs_crypt_bio_not_mergeable(io->bio, bio_page))
+		__submit_merged_bio(io);
+
 alloc_new:
 	if (io->bio == NULL) {
+		int bio_blocks = BIO_MAX_PAGES;
+		bool nomerge = false;
+
 		if ((fio->type == DATA || fio->type == NODE) &&
 				fio->new_blkaddr & F2FS_IO_SIZE_MASK(sbi)) {
 			dec_page_count(sbi, WB_DATA_TYPE(bio_page));
 			fio->retry = true;
 			goto skip;
 		}
+
+		/* if nomerge return true, bio would be tracked
+		 * by wbt, we force to shrink the bio->bi_max_vecs,
+		 * avoid too much delay introduced by a big bio.
+		 */
+		bio_blocks = wbt_max_bio_blocks(sbi->sb->s_bdev,
+					fio->op | fio->op_flags,
+					BIO_MAX_PAGES, &nomerge);
+
 		io->bio = __bio_alloc(sbi, fio->new_blkaddr, fio->io_wbc,
-						BIO_MAX_PAGES, false,
+						bio_blocks, false,
 						fio->type, fio->temp);
+
+		if (nomerge)
+			io->bio->bi_opf |= REQ_NOMERGE;
+
 		io->fio = *fio;
 	}
 
 	if (bio_add_page(io->bio, bio_page, PAGE_SIZE, 0) < PAGE_SIZE) {
 		__submit_merged_bio(io);
 		goto alloc_new;
+	} else {
+		/* if it's a wbt tracked bio, kick it once bio is full,
+		 * so the wbt inflight could update in time.
+		 */
+		if ((io->bio->bi_opf & REQ_NOMERGE) &&
+		     wbt_need_kick_bio(io->bio))
+			__submit_merged_bio(io);
 	}
 
 	if (fio->io_wbc)
@@ -607,6 +714,11 @@ static struct bio *f2fs_grab_read_bio(struct inode *inode, block_t blkaddr,
 	bio->bi_end_io = f2fs_read_end_io;
 	bio_set_op_attrs(bio, REQ_OP_READ, op_flag);
 
+	if (fscrypt_is_hw_encrypt(inode)) {
+		f2fs_wait_on_block_writeback(inode, blkaddr);
+		return bio;
+	}
+
 	if (f2fs_encrypted_file(inode))
 		post_read_steps |= 1 << STEP_DECRYPT;
 	if (post_read_steps) {
@@ -639,8 +751,11 @@ static int f2fs_submit_page_read(struct inode *inode, struct page *page,
 		bio_put(bio);
 		return -EFAULT;
 	}
+
 	ClearPageError(page);
 	inc_page_count(F2FS_I_SB(inode), F2FS_RD_DATA);
+
+	f2fs_set_bio_ctx(inode, bio);
 	__f2fs_submit_read_bio(F2FS_I_SB(inode), bio, DATA);
 	return 0;
 }
@@ -952,6 +1067,11 @@ static int __allocate_data_block(struct dnode_of_data *dn, int seg_type)
 alloc:
 	set_summary(&sum, dn->nid, dn->ofs_in_node, ni.version);
 	old_blkaddr = dn->data_blkaddr;
+
+	bd_mutex_lock(&sbi->bd_mutex);
+	inc_bd_array_val(sbi, hotcold_cnt, HC_DIRECTIO, 1);
+	bd_mutex_unlock(&sbi->bd_mutex);
+
 	f2fs_allocate_data_block(sbi, NULL, old_blkaddr, &dn->data_blkaddr,
 					&sum, seg_type, NULL, false);
 	if (GET_SEGNO(sbi, old_blkaddr) != NULL_SEGNO)
@@ -1553,6 +1673,7 @@ static int f2fs_mpage_readpages(struct address_space *mapping,
 			unsigned nr_pages, bool is_readahead)
 {
 	struct bio *bio = NULL;
+	unsigned io_submited = 0;
 	sector_t last_block_in_bio = 0;
 	struct inode *inode = mapping->host;
 	const unsigned blkbits = inode->i_blkbits;
@@ -1571,6 +1692,15 @@ static int f2fs_mpage_readpages(struct address_space *mapping,
 	map.m_next_extent = NULL;
 	map.m_seg_type = NO_CHECK_TYPE;
 	map.m_may_create = false;
+
+	if (pages)
+		/*
+		 * Get one quota before read pages, when this ends,
+		 * get the rest of quotas according to how many bios
+		 * we submited in this routine.
+		 */
+		blk_throtl_get_quota(inode->i_sb->s_bdev, PAGE_SIZE,
+				     msecs_to_jiffies(100), true);
 
 	for (; nr_pages; nr_pages--) {
 		if (pages) {
@@ -1640,9 +1770,15 @@ zero_out:
 		if (bio && (last_block_in_bio != block_nr - 1 ||
 			!__same_bdev(F2FS_I_SB(inode), block_nr, bio))) {
 submit_and_realloc:
+			f2fs_set_bio_ctx(inode, bio);
+			io_submited++;
 			__f2fs_submit_read_bio(F2FS_I_SB(inode), bio, DATA);
 			bio = NULL;
 		}
+
+		if (f2fs_crypt_bio_not_mergeable(bio, page))
+			goto submit_and_realloc;
+
 		if (bio == NULL) {
 			bio = f2fs_grab_read_bio(inode, block_nr, nr_pages,
 					is_readahead ? REQ_RAHEAD : 0);
@@ -1672,6 +1808,8 @@ set_error_page:
 		goto next_page;
 confused:
 		if (bio) {
+			f2fs_set_bio_ctx(inode, bio);
+			io_submited++;
 			__f2fs_submit_read_bio(F2FS_I_SB(inode), bio, DATA);
 			bio = NULL;
 		}
@@ -1681,8 +1819,16 @@ next_page:
 			put_page(page);
 	}
 	BUG_ON(pages && !list_empty(pages));
-	if (bio)
+	if (bio) {
+		f2fs_set_bio_ctx(inode, bio);
+		io_submited++;
 		__f2fs_submit_read_bio(F2FS_I_SB(inode), bio, DATA);
+	}
+
+	if (io_submited)
+		blk_throtl_get_quotas(inode->i_sb->s_bdev, PAGE_SIZE,
+				     msecs_to_jiffies(100), true,
+				     io_submited - 1);
 	return 0;
 }
 
@@ -1728,6 +1874,9 @@ static int encrypt_one_page(struct f2fs_io_info *fio)
 
 	/* wait for GCed page writeback via META_MAPPING */
 	f2fs_wait_on_block_writeback(inode, fio->old_blkaddr);
+
+	if (fscrypt_is_hw_encrypt(inode))
+		return 0;
 
 retry_encrypt:
 	fio->encrypted_page = fscrypt_encrypt_page(inode, fio->page,
@@ -1846,6 +1995,7 @@ int f2fs_do_write_data_page(struct f2fs_io_info *fio)
 	struct node_info ni;
 	bool ipu_force = false;
 	int err = 0;
+	struct f2fs_sb_info *sbi = F2FS_I_SB(inode);
 
 	set_new_dnode(&dn, inode, NULL, NULL, 0);
 	if (need_inplace_update(fio) &&
@@ -1890,6 +2040,17 @@ got_it:
 	 */
 	if (ipu_force || (is_valid_data_blkaddr(fio->sbi, fio->old_blkaddr) &&
 					need_inplace_update(fio))) {
+		if (S_ISDIR(inode->i_mode)) {
+			bd_mutex_lock(&sbi->bd_mutex);
+			inc_bd_array_val(sbi, hotcold_cnt,
+				HC_REWRITE_HOT_DATA, 1);
+			bd_mutex_unlock(&sbi->bd_mutex);
+		} else {
+			bd_mutex_lock(&sbi->bd_mutex);
+			inc_bd_array_val(sbi, hotcold_cnt,
+				HC_REWRITE_WARM_DATA, 1);
+			bd_mutex_unlock(&sbi->bd_mutex);
+		}
 		err = encrypt_one_page(fio);
 		if (err)
 			goto out_writepage;
@@ -2103,6 +2264,24 @@ static int f2fs_write_data_page(struct page *page,
 	return __write_data_page(page, NULL, wbc, FS_DATA_IO);
 }
 
+#ifdef CONFIG_BLK_WBT
+static void f2fs_wbt_blk_throtl(struct block_device *bdev,
+				struct writeback_control *wbc)
+{
+	struct request_queue *q;
+
+	if (unlikely(!bdev) || unlikely(!bdev->bd_disk))
+		return;
+
+	q = bdev_get_queue(bdev);
+	if (unlikely(!q))
+		return;
+
+	if (!wbt_fs_get_quota(q, wbc))
+		wbt_fs_wait(q, wbc);
+}
+#endif
+
 /*
  * This function was copied from write_cche_pages from mm/page-writeback.c.
  * The major change is making write step of cold data page separately from
@@ -2165,6 +2344,9 @@ retry:
 		if (nr_pages == 0)
 			break;
 
+#ifdef CONFIG_BLK_WBT
+		f2fs_wbt_blk_throtl(mapping->host->i_sb->s_bdev, wbc);
+#endif
 		for (i = 0; i < nr_pages; i++) {
 			struct page *page = pvec.pages[i];
 			bool submitted = false;
@@ -2248,7 +2430,11 @@ continue_unlock:
 	if (wbc->range_cyclic || (range_whole && wbc->nr_to_write > 0))
 		mapping->writeback_index = done_index;
 
+#ifdef CONFIG_F2FS_JOURNAL_APPEND
+	if (nwritten && (!write_opt || !task_in_wb_thrd(current)))
+#else
 	if (nwritten)
+#endif
 		f2fs_submit_merged_write_cond(F2FS_M_SB(mapping), mapping->host,
 								NULL, 0, DATA);
 
@@ -2309,6 +2495,14 @@ static int __f2fs_write_data_pages(struct address_space *mapping,
 	else if (atomic_read(&sbi->wb_sync_req[DATA]))
 		goto skip_write;
 
+#ifdef CONFIG_BLK_DEV_THROTTLING
+	if (!(current->flags & PF_MUTEX_GC)) {
+		current->wb_stat.bios = 0;
+		blk_throtl_get_quota(inode->i_sb->s_bdev, PAGE_SIZE,
+				     msecs_to_jiffies(100), true);
+	}
+#endif
+
 	if (__should_serialize_io(inode, wbc)) {
 		mutex_lock(&sbi->writepages);
 		locked = true;
@@ -2320,6 +2514,17 @@ static int __f2fs_write_data_pages(struct address_space *mapping,
 
 	if (locked)
 		mutex_unlock(&sbi->writepages);
+
+#ifdef CONFIG_BLK_DEV_THROTTLING
+	if (!(current->flags & PF_MUTEX_GC)) {
+		if (current->wb_stat.bios)
+			blk_throtl_get_quotas(inode->i_sb->s_bdev,
+					     PAGE_SIZE,
+					     msecs_to_jiffies(100),
+					     true,
+					     current->wb_stat.bios - 1);
+	}
+#endif
 
 	if (wbc->sync_mode == WB_SYNC_ALL)
 		atomic_dec(&sbi->wb_sync_req[DATA]);

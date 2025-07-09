@@ -989,7 +989,7 @@ ssize_t vfs_readv(struct file *file, const struct iovec __user *vec,
 	return ret;
 }
 
-static ssize_t vfs_writev(struct file *file, const struct iovec __user *vec,
+ssize_t vfs_writev(struct file *file, const struct iovec __user *vec,
 		   unsigned long vlen, loff_t *pos, rwf_t flags)
 {
 	struct iovec iovstack[UIO_FASTIOV];

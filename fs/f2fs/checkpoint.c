@@ -96,8 +96,16 @@ repeat:
 	}
 
 	if (unlikely(!PageUptodate(page))) {
-		f2fs_put_page(page, 1);
-		return ERR_PTR(-EIO);
+		f2fs_stop_checkpoint(sbi, false);
+		f2fs_msg(sbi->sb, KERN_ERR, "f2fs readed meta page is not uptodate!\n");
+#ifdef CONFIG_HUAWEI_F2FS_DSM
+			if (f2fs_dclient && !dsm_client_ocuppy(f2fs_dclient)) {
+				dsm_client_record(f2fs_dclient, "F2FS reboot: %s:%d\n",
+					__func__, __LINE__);
+				dsm_client_notify(f2fs_dclient, DSM_F2FS_NEED_FSCK);
+			}
+#endif
+		f2fs_restart(); /* force restarting */
 	}
 out:
 	return page;
@@ -1267,6 +1275,8 @@ static void update_ckpt_flags(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 
 	if (is_sbi_flag_set(sbi, SBI_QUOTA_SKIP_FLUSH))
 		__set_ckpt_flags(ckpt, CP_QUOTA_NEED_FSCK_FLAG);
+	else
+		__clear_ckpt_flags(ckpt, CP_QUOTA_NEED_FSCK_FLAG);
 	/*
 	 * TODO: we count on fsck.f2fs to clear this flag until we figure out
 	 * missing cases which clear it incorrectly.
@@ -1319,6 +1329,8 @@ static void commit_checkpoint(struct f2fs_sb_info *sbi,
 	f2fs_submit_merged_write(sbi, META_FLUSH);
 }
 
+u64 g_cp_flush_meta_time, g_cp_flush_meta_begin, g_cp_flush_meta_end;
+
 static int do_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 {
 	struct f2fs_checkpoint *ckpt = F2FS_CKPT(sbi);
@@ -1335,9 +1347,12 @@ static int do_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 	int err;
 
 	/* Flush all the NAT/SIT pages */
+	g_cp_flush_meta_begin = local_clock();
 	f2fs_sync_meta_pages(sbi, META, LONG_MAX, FS_CP_META_IO);
 	f2fs_bug_on(sbi, get_pages(sbi, F2FS_DIRTY_META) &&
 					!f2fs_cp_error(sbi));
+	g_cp_flush_meta_end = local_clock();
+	g_cp_flush_meta_time += g_cp_flush_meta_end - g_cp_flush_meta_begin;
 
 	/*
 	 * modify checkpoint
@@ -1383,6 +1398,18 @@ static int do_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 		ckpt->cp_pack_total_block_count = cpu_to_le32(F2FS_CP_PACKS +
 				cp_payload_blks + data_sum_blocks +
 				orphan_blocks);
+
+#ifdef CONFIG_F2FS_JOURNAL_APPEND
+	if (need_append_nat_journal(CURSEG_I(sbi, CURSEG_HOT_DATA)->journal))
+		__set_ckpt_flags(ckpt, CP_APPEND_NAT_FLAG);
+	else
+		__clear_ckpt_flags(ckpt, CP_APPEND_NAT_FLAG);
+
+	if (need_append_sit_journal(CURSEG_I(sbi, CURSEG_COLD_DATA)->journal))
+		__set_ckpt_flags(ckpt, CP_APPEND_SIT_FLAG);
+	else
+		__clear_ckpt_flags(ckpt, CP_APPEND_SIT_FLAG);
+#endif
 
 	/* update ckpt flag for checkpoint */
 	update_ckpt_flags(sbi, cpc);
@@ -1439,6 +1466,9 @@ static int do_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 		start_blk += NR_CURSEG_NODE_TYPE;
 	}
 
+#ifdef CONFIG_F2FS_JOURNAL_APPEND
+	write_append_journal(sbi, start_blk + 1);
+#endif
 	/* update user_block_counts */
 	sbi->last_valid_block_count = sbi->total_valid_block_count;
 	percpu_counter_set(&sbi->alloc_valid_block_count, 0);
@@ -1499,6 +1529,7 @@ int f2fs_write_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 	struct f2fs_checkpoint *ckpt = F2FS_CKPT(sbi);
 	unsigned long long ckpt_ver;
 	int err = 0;
+	u64 cp_begin = 0, cp_end, cp_submit_end = 0, discard_begin, discard_end;
 
 	if (unlikely(is_sbi_flag_set(sbi, SBI_CP_DISABLED))) {
 		if (cpc->reason != CP_PAUSE)
@@ -1523,6 +1554,7 @@ int f2fs_write_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 
 	trace_f2fs_write_checkpoint(sbi->sb, cpc->reason, "start block_ops");
 
+	cp_begin = local_clock();
 	err = block_operations(sbi);
 	if (err)
 		goto out;
@@ -1530,6 +1562,7 @@ int f2fs_write_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 	trace_f2fs_write_checkpoint(sbi->sb, cpc->reason, "finish block_ops");
 
 	f2fs_flush_merged_writes(sbi);
+	cp_submit_end = local_clock();
 
 	/* this is the case of multiple fstrims without any changes */
 	if (cpc->reason & CP_DISCARD) {
@@ -1541,8 +1574,16 @@ int f2fs_write_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 		if (NM_I(sbi)->dirty_nat_cnt == 0 &&
 				SIT_I(sbi)->dirty_sentries == 0 &&
 				prefree_segments(sbi) == 0) {
+			g_cp_flush_meta_time = 0;
+			g_cp_flush_meta_begin = local_clock();
 			f2fs_flush_sit_entries(sbi, cpc);
+			discard_begin = local_clock();
 			f2fs_clear_prefree_segments(sbi, cpc);
+			discard_end = local_clock();
+			bd_mutex_lock(&sbi->bd_mutex);
+			max_bd_val(sbi, max_cp_discard_time,
+				   discard_end - discard_begin);
+			bd_mutex_unlock(&sbi->bd_mutex);
 			unblock_operations(sbi);
 			goto out;
 		}
@@ -1557,18 +1598,30 @@ int f2fs_write_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 	ckpt->checkpoint_ver = cpu_to_le64(++ckpt_ver);
 
 	/* write cached NAT/SIT entries to NAT/SIT area */
+	g_cp_flush_meta_time = 0;
+	g_cp_flush_meta_begin = local_clock();
 	err = f2fs_flush_nat_entries(sbi, cpc);
 	if (err)
 		goto stop;
 
 	f2fs_flush_sit_entries(sbi, cpc);
+	g_cp_flush_meta_end = local_clock();
+	g_cp_flush_meta_time = g_cp_flush_meta_end - g_cp_flush_meta_begin;
 
 	/* unlock all the fs_lock[] in do_checkpoint() */
 	err = do_checkpoint(sbi, cpc);
 	if (err)
 		f2fs_release_discard_addrs(sbi);
-	else
+	else {
+		discard_begin = local_clock();
 		f2fs_clear_prefree_segments(sbi, cpc);
+		discard_end = local_clock();
+		bd_mutex_lock(&sbi->bd_mutex);
+		max_bd_val(sbi, max_cp_discard_time,
+			discard_end - discard_begin);
+		bd_mutex_unlock(&sbi->bd_mutex);
+	}
+
 stop:
 	unblock_operations(sbi);
 	stat_inc_cp_count(sbi->stat_info);
@@ -1582,11 +1635,22 @@ stop:
 	trace_f2fs_write_checkpoint(sbi->sb, cpc->reason, "finish checkpoint");
 out:
 	mutex_unlock(&sbi->cp_mutex);
+	if (cp_begin && !err) {
+		cp_end = local_clock();
+		bd_mutex_lock(&sbi->bd_mutex);
+		inc_bd_val(sbi, cp_succ_cnt, 1);
+		max_bd_val(sbi, max_cp_submit_time, cp_submit_end - cp_begin);
+		inc_bd_val(sbi, cp_time, cp_end - cp_begin);
+		max_bd_val(sbi, max_cp_time, cp_end - cp_begin);
+		max_bd_val(sbi, max_cp_flush_meta_time, g_cp_flush_meta_time);
+		bd_mutex_unlock(&sbi->bd_mutex);
+	}
 	return err;
 }
 
 void f2fs_init_ino_entry_info(struct f2fs_sb_info *sbi)
 {
+	unsigned int append = 0;
 	int i;
 
 	for (i = 0; i < MAX_INO_ENTRY; i++) {
@@ -1598,8 +1662,14 @@ void f2fs_init_ino_entry_info(struct f2fs_sb_info *sbi)
 		im->ino_num = 0;
 	}
 
+#ifdef CONFIG_F2FS_JOURNAL_APPEND
+	append = APPEND_BLOCKS;
+#endif
+	if (enabled_nat_bits(sbi, NULL))
+		append += NM_I(sbi)->nat_bits_blocks;
+
 	sbi->max_orphans = (sbi->blocks_per_seg - F2FS_CP_PACKS -
-			NR_CURSEG_TYPE - __cp_payload(sbi)) *
+			NR_CURSEG_TYPE - __cp_payload(sbi) - append) *
 				F2FS_ORPHANS_PER_BLOCK;
 }
 

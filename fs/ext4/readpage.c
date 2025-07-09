@@ -88,6 +88,11 @@ static void mpage_end_io(struct bio *bio)
 	if (trace_android_fs_dataread_start_enabled())
 		ext4_trace_read_completion(bio);
 
+	if (bio_encrypted(bio)) {
+		WARN_ON(bio->bi_private);
+		goto uptodate;
+	}
+
 	if (ext4_bio_encrypted(bio)) {
 		if (bio->bi_status) {
 			fscrypt_release_ctx(bio->bi_private);
@@ -96,6 +101,7 @@ static void mpage_end_io(struct bio *bio)
 			return;
 		}
 	}
+uptodate:
 	bio_for_each_segment_all(bv, bio, i) {
 		struct page *page = bv->bv_page;
 
@@ -154,12 +160,22 @@ int ext4_mpage_readpages(struct address_space *mapping,
 	struct block_device *bdev = inode->i_sb->s_bdev;
 	int length;
 	unsigned relative_block = 0;
+	unsigned io_submited = 0;
 	struct ext4_map_blocks map;
 
 	map.m_pblk = 0;
 	map.m_lblk = 0;
 	map.m_len = 0;
 	map.m_flags = 0;
+
+	if (pages)
+		/*
+		 * Get one quota before read pages, when this ends,
+		 * get the rest of quotas according to how many bios
+		 * we submited in this routine.
+		 */
+		blk_throtl_get_quota(bdev, PAGE_SIZE,
+				     msecs_to_jiffies(100), true);
 
 	for (; nr_pages; nr_pages--) {
 		int fully_mapped = 1;
@@ -275,6 +291,8 @@ int ext4_mpage_readpages(struct address_space *mapping,
 		 */
 		if (bio && (last_block_in_bio != blocks[0] - 1)) {
 		submit_and_realloc:
+			ext4_set_bio_ctx(inode, bio);
+			io_submited++;
 			ext4_submit_bio_read(bio);
 			bio = NULL;
 		}
@@ -282,7 +300,8 @@ int ext4_mpage_readpages(struct address_space *mapping,
 			struct fscrypt_ctx *ctx = NULL;
 
 			if (ext4_encrypted_inode(inode) &&
-			    S_ISREG(inode->i_mode)) {
+			    S_ISREG(inode->i_mode) &&
+			    !fscrypt_is_hw_encrypt(inode)) {
 				ctx = fscrypt_get_ctx(inode, GFP_NOFS);
 				if (IS_ERR(ctx))
 					goto set_error_page;
@@ -308,6 +327,8 @@ int ext4_mpage_readpages(struct address_space *mapping,
 		if (((map.m_flags & EXT4_MAP_BOUNDARY) &&
 		     (relative_block == map.m_len)) ||
 		    (first_hole != blocks_per_page)) {
+			ext4_set_bio_ctx(inode, bio);
+			io_submited++;
 			ext4_submit_bio_read(bio);
 			bio = NULL;
 		} else
@@ -315,6 +336,8 @@ int ext4_mpage_readpages(struct address_space *mapping,
 		goto next_page;
 	confused:
 		if (bio) {
+			ext4_set_bio_ctx(inode, bio);
+			io_submited++;
 			ext4_submit_bio_read(bio);
 			bio = NULL;
 		}
@@ -327,7 +350,16 @@ int ext4_mpage_readpages(struct address_space *mapping,
 			put_page(page);
 	}
 	BUG_ON(pages && !list_empty(pages));
-	if (bio)
+	if (bio) {
+		ext4_set_bio_ctx(inode, bio);
+		io_submited++;
 		ext4_submit_bio_read(bio);
+	}
+
+	if (io_submited)
+		/* we have got one quota at the beginning, so sub 1 here */
+		blk_throtl_get_quotas(bdev, PAGE_SIZE,
+				      msecs_to_jiffies(100), true,
+				      io_submited - 1);
 	return 0;
 }

@@ -26,7 +26,17 @@ static void seq_set_overflow(struct seq_file *m)
 
 static void *seq_buf_alloc(unsigned long size)
 {
+#if 0
 	return kvmalloc(size, GFP_KERNEL);
+#else
+	void *buf;
+
+	if (size > PAGE_SIZE)
+		buf = vmalloc(size);
+	else
+		buf = kmalloc(size, GFP_KERNEL | __GFP_NOWARN);
+	return buf;
+#endif
 }
 
 /**
@@ -612,7 +622,7 @@ int seq_release_private(struct inode *inode, struct file *file)
 {
 	struct seq_file *seq = file->private_data;
 
-	kfree(seq->private);
+	kvfree(seq->private);
 	seq->private = NULL;
 	return seq_release(inode, file);
 }
@@ -625,7 +635,11 @@ void *__seq_open_private(struct file *f, const struct seq_operations *ops,
 	void *private;
 	struct seq_file *seq;
 
-	private = kzalloc(psize, GFP_KERNEL);
+	if (psize > (PAGE_SIZE << 1))
+		private = vzalloc(psize);
+	else
+		private = kzalloc(psize, GFP_KERNEL);
+
 	if (private == NULL)
 		goto out;
 
@@ -638,7 +652,7 @@ void *__seq_open_private(struct file *f, const struct seq_operations *ops,
 	return private;
 
 out_free:
-	kfree(private);
+	kvfree(private);
 out:
 	return NULL;
 }

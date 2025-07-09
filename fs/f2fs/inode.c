@@ -17,6 +17,7 @@
 #include "xattr.h"
 
 #include <trace/events/f2fs.h>
+#include <linux/file_map.h>
 
 void f2fs_mark_inode_dirty_sync(struct inode *inode, bool sync)
 {
@@ -428,6 +429,10 @@ static int do_read_inode(struct inode *inode)
 	stat_inc_inline_inode(inode);
 	stat_inc_inline_dir(inode);
 
+#ifdef CONFIG_FILE_MAP
+        inode->i_file_map = NULL;
+        file_map_entry_attach_unused(inode);
+#endif
 	return 0;
 }
 
@@ -611,6 +616,16 @@ retry:
 			goto retry;
 		} else if (err != -ENOENT) {
 			f2fs_stop_checkpoint(sbi, false);
+			f2fs_msg(sbi->sb, KERN_ERR,
+				"f2fs inode page read error! erro_num = %d\n", err);
+#ifdef CONFIG_HUAWEI_F2FS_DSM
+			if (f2fs_dclient && !dsm_client_ocuppy(f2fs_dclient)) {
+				dsm_client_record(f2fs_dclient, "F2FS reboot: %s:%d [%d]\n",
+					__func__, __LINE__, err);
+				dsm_client_notify(f2fs_dclient, DSM_F2FS_NEED_FSCK);
+			}
+#endif
+			f2fs_restart(); /* force restarting */
 		}
 		return;
 	}
@@ -650,12 +665,25 @@ void f2fs_evict_inode(struct inode *inode)
 	struct f2fs_sb_info *sbi = F2FS_I_SB(inode);
 	nid_t xnid = F2FS_I(inode)->i_xattr_nid;
 	int err = 0;
+#ifdef CONFIG_F2FS_JOURNAL_APPEND
+	enum page_type type;
+#endif
 
 	/* some remained atomic pages should discarded */
 	if (f2fs_is_atomic_file(inode))
 		f2fs_drop_inmem_pages(inode);
 
 	trace_f2fs_evict_inode(inode);
+
+#ifdef CONFIG_F2FS_JOURNAL_APPEND
+	if (inode->i_ino == F2FS_NODE_INO(sbi))
+		type = NODE;
+	else if (inode->i_ino == F2FS_META_INO(sbi))
+		type = META;
+	else
+		type = DATA;
+	f2fs_submit_merged_write_cond(sbi, inode, 0, ULONG_MAX, type);
+#endif
 	truncate_inode_pages_final(&inode->i_data);
 
 	if (inode->i_ino == F2FS_NODE_INO(sbi) ||

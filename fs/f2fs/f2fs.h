@@ -28,8 +28,56 @@
 #define __FS_HAS_ENCRYPTION IS_ENABLED(CONFIG_F2FS_FS_ENCRYPTION)
 #include <linux/fscrypt.h>
 
+#include <linux/reboot.h>
+
+#ifdef CONFIG_HUAWEI_F2FS_DSM
+#define DSM_F2FS_UNLINK_SIGNIF_FILE		(928005000)
+#define DSM_F2FS_NEED_FSCK			(928005001)
+#endif
+
+#ifdef CONFIG_HUAWEI_F2FS_DSM
+#include <dsm/dsm_pub.h>
+extern struct dsm_client *f2fs_dclient;
+#endif
+
 #ifdef CONFIG_F2FS_CHECK_FS
+
+#ifdef CONFIG_HUAWEI_F2FS_DSM
+#define f2fs_bug_on(sbi, condition) \
+	do { \
+		if (unlikely(condition)) { \
+			if(f2fs_dclient && !dsm_client_ocuppy(f2fs_dclient)) \
+			{ \
+				dsm_client_record(f2fs_dclient,"F2FS bug: %s:%d\n", __func__, __LINE__); \
+				dsm_client_notify(f2fs_dclient, DSM_F2FS_NEED_FSCK); \
+			} \
+			f2fs_print_raw_sb_info(sbi); \
+			f2fs_print_ckpt_info(sbi); \
+			f2fs_print_sbi_info(sbi); \
+		} \
+		BUG_ON(condition); \
+	} while (0)
+#else /* CONFIG_HUAWEI_F2FS_DSM */
 #define f2fs_bug_on(sbi, condition)	BUG_ON(condition)
+#endif /* CONFIG_HUAWEI_F2FS_DSM */
+
+#else
+#ifdef CONFIG_HUAWEI_F2FS_DSM
+#define f2fs_bug_on(sbi, condition)					\
+	do {								\
+		if (unlikely(condition)) {				\
+			if(f2fs_dclient && !dsm_client_ocuppy(f2fs_dclient)) \
+			{ \
+				dsm_client_record(f2fs_dclient,"F2FS bug: %s:%d\n", __func__, __LINE__); \
+				dsm_client_notify(f2fs_dclient, DSM_F2FS_NEED_FSCK); \
+			} \
+			f2fs_print_raw_sb_info(sbi); \
+			f2fs_print_ckpt_info(sbi); \
+			f2fs_print_sbi_info(sbi); \
+			WARN_ON(1);					\
+			set_sbi_flag(sbi, SBI_NEED_FSCK);		\
+		}							\
+	} while (0)
 #else
 #define f2fs_bug_on(sbi, condition)					\
 	do {								\
@@ -39,7 +87,14 @@
 		}							\
 	} while (0)
 #endif
+#endif
 
+#define f2fs_restart() do { \
+	if (system_state > SYSTEM_RUNNING) \
+		WARN_ON(1); \
+	else \
+		BUG_ON(1); \
+} while (0)
 enum {
 	FAULT_KMALLOC,
 	FAULT_KVMALLOC,
@@ -253,11 +308,17 @@ struct discard_entry {
 
 /* default discard granularity of inner discard thread, unit: block count */
 #define DEFAULT_DISCARD_GRANULARITY		16
+#define DISCARD_GRAN_BL		16
+#define DISCARD_GRAN_BG		512
+#define DISCARD_GRAN_FORCE	1
 
 /* max discard pend list number */
 #define MAX_PLIST_NUM		512
 #define plist_idx(blk_num)	((blk_num) >= MAX_PLIST_NUM ?		\
 					(MAX_PLIST_NUM - 1) : ((blk_num) - 1))
+#define FS_FREE_SPACE_PERCENT		20
+#define DEVICE_FREE_SPACE_PERCENT	10
+#define HUNDRED_PERCENT			100
 
 enum {
 	D_PREP,			/* initial */
@@ -290,29 +351,45 @@ struct discard_cmd {
 	unsigned char state;		/* state */
 	unsigned char queued;		/* queued discard */
 	int error;			/* bio error */
+#ifdef CONFIG_F2FS_STAT_FS
+	u64 discard_time;
+#endif
 	spinlock_t lock;		/* for state/bio_ref updating */
 	unsigned short bio_ref;		/* bio reference count */
 };
 
 enum {
 	DPOLICY_BG,
+	DPOLICY_BL,
 	DPOLICY_FORCE,
 	DPOLICY_FSTRIM,
 	DPOLICY_UMOUNT,
 	MAX_DPOLICY,
 };
 
+enum {
+	SUB_POLICY_BIG,
+	SUB_POLICY_MID,
+	SUB_POLICY_SMALL,
+	NR_SUB_POLICY,
+};
+
+struct discard_sub_policy {
+	unsigned int max_requests;
+	int interval;
+};
+
 struct discard_policy {
 	int type;			/* type of discard */
+	unsigned int granularity;	/* discard granularity */
+	bool io_aware;			/* issue discard in idle time */
+	unsigned int io_aware_gran;	/* minimum granularity discard not be aware of I/O */
+	bool sync;			/* submit discard with REQ_SYNC flag */
+	bool ordered;			/* issue discard by lba order */
+	struct discard_sub_policy sub_policy[NR_SUB_POLICY];
 	unsigned int min_interval;	/* used for candidates exist */
 	unsigned int mid_interval;	/* used for device busy */
 	unsigned int max_interval;	/* used for candidates not exist */
-	unsigned int max_requests;	/* # of discards issued per round */
-	unsigned int io_aware_gran;	/* minimum granularity discard not be aware of I/O */
-	bool io_aware;			/* issue discard in idle time */
-	bool sync;			/* submit discard with REQ_SYNC flag */
-	bool ordered;			/* issue discard by lba order */
-	unsigned int granularity;	/* discard granularity */
 	int timeout;			/* discard timeout for put_super */
 };
 
@@ -353,8 +430,22 @@ struct fsync_inode_entry {
 #define sit_in_journal(jnl, i)		((jnl)->sit_j.entries[i].se)
 #define segno_in_journal(jnl, i)	((jnl)->sit_j.entries[i].segno)
 
-#define MAX_NAT_JENTRIES(jnl)	(NAT_JOURNAL_ENTRIES - nats_in_cursum(jnl))
-#define MAX_SIT_JENTRIES(jnl)	(SIT_JOURNAL_ENTRIES - sits_in_cursum(jnl))
+#ifdef CONFIG_F2FS_JOURNAL_APPEND
+extern unsigned int write_opt;
+#define APPEND_BLOCKS 2
+#define MAX_NAT_JENTRIES(jnl)	(NAT_JOURNAL_ENTRIES +\
+				(write_opt ? NAT_APPEND_JOURNAL_ENTRIES : 0) -\
+				nats_in_cursum(jnl))
+#define MAX_SIT_JENTRIES(jnl)	(SIT_JOURNAL_ENTRIES +\
+				(write_opt ? SIT_APPEND_JOURNAL_ENTRIES : 0) -\
+				sits_in_cursum(jnl))
+
+#define need_append_nat_journal(jnl)	(nats_in_cursum(jnl) > NAT_JOURNAL_ENTRIES)
+#define need_append_sit_journal(jnl)	(sits_in_cursum(jnl) > SIT_JOURNAL_ENTRIES)
+#else
+#define MAX_NAT_JENTRIES(jnl)  (NAT_JOURNAL_ENTRIES - nats_in_cursum(jnl))
+#define MAX_SIT_JENTRIES(jnl)  (SIT_JOURNAL_ENTRIES - sits_in_cursum(jnl))
+#endif
 
 static inline int update_nats_in_cursum(struct f2fs_journal *journal, int i)
 {
@@ -376,8 +467,8 @@ static inline bool __has_cursum_space(struct f2fs_journal *journal,
 							int size, int type)
 {
 	if (type == NAT_JOURNAL)
-		return size <= MAX_NAT_JENTRIES(journal);
-	return size <= MAX_SIT_JENTRIES(journal);
+		return size <= (int)MAX_NAT_JENTRIES(journal);
+	return size <= (int)MAX_SIT_JENTRIES(journal);
 }
 
 /*
@@ -1149,6 +1240,29 @@ enum fsync_mode {
 #define DUMMY_ENCRYPTION_ENABLED(sbi) (0)
 #endif
 
+static inline long long nsec_to_sec(unsigned long long nsec)
+{
+	if ((long long)nsec < 0) {
+		nsec = -nsec;
+		do_div(nsec, 1000000);
+		return -nsec;
+	}
+	do_div(nsec, 1000000);
+	return nsec;
+}
+
+struct f2fs_hot_cold_params {
+	unsigned int enable;
+	unsigned int hot_data_lower_limit;
+	unsigned int hot_data_waterline;
+	unsigned int warm_data_lower_limit;
+	unsigned int warm_data_waterline;
+	unsigned int hot_node_lower_limit;
+	unsigned int hot_node_waterline;
+	unsigned int warm_node_lower_limit;
+	unsigned int warm_node_waterline;
+};
+
 struct f2fs_sb_info {
 	struct super_block *sb;			/* pointer to VFS super block */
 	struct proc_dir_entry *s_proc;		/* proc entry */
@@ -1299,6 +1413,8 @@ struct f2fs_sb_info {
 	unsigned int io_skip_bggc;		/* skip background gc for in-flight IO */
 	unsigned int other_skip_bggc;		/* skip background gc for other reasons */
 	unsigned int ndirty_inode[NR_INODE_TYPE];	/* # of dirty inodes */
+	struct mutex bd_mutex;
+	struct f2fs_bigdata_info *bd_info;      /* big data collections */
 #endif
 	spinlock_t stat_lock;			/* lock for stat operations */
 
@@ -1329,6 +1445,9 @@ struct f2fs_sb_info {
 
 	/* Precomputed FS UUID checksum for seeding other checksums */
 	__u32 s_chksum_seed;
+#ifdef CONFIG_F2FS_GRADING_SSR
+	struct f2fs_hot_cold_params hot_cold_params;
+#endif
 };
 
 struct f2fs_private_dio {
@@ -1546,6 +1665,8 @@ static inline bool is_sbi_flag_set(struct f2fs_sb_info *sbi, unsigned int type)
 {
 	return test_bit(type, &sbi->s_flag);
 }
+
+#include "f2fs_dump_info.h"
 
 static inline void set_sbi_flag(struct f2fs_sb_info *sbi, unsigned int type)
 {
@@ -2821,6 +2942,18 @@ static inline void f2fs_update_iostat(struct f2fs_sb_info *sbi,
 	spin_unlock(&sbi->iostat_lock);
 }
 
+static inline block_t fs_free_space_threshold(struct f2fs_sb_info *sbi)
+{
+	return (block_t)(SM_I(sbi)->main_segments * sbi->blocks_per_seg *
+		FS_FREE_SPACE_PERCENT) / HUNDRED_PERCENT;
+}
+
+static inline block_t device_free_space_threshold(struct f2fs_sb_info *sbi)
+{
+	return (block_t)(SM_I(sbi)->main_segments * sbi->blocks_per_seg *
+		DEVICE_FREE_SPACE_PERCENT) / HUNDRED_PERCENT;
+}
+
 #define __is_large_section(sbi)		((sbi)->segs_per_sec > 1)
 
 #define __is_meta_io(fio) (PAGE_TYPE_OF_BIO((fio)->type) == META &&	\
@@ -2977,6 +3110,9 @@ int f2fs_sync_fs(struct super_block *sb, int sync);
 extern __printf(3, 4)
 void f2fs_msg(struct super_block *sb, const char *level, const char *fmt, ...);
 int f2fs_sanity_check_ckpt(struct f2fs_sb_info *sbi);
+int sanity_check_ckpt(struct f2fs_sb_info *sbi);
+int f2fs_set_bio_ctx(struct inode *inode, struct bio *bio);
+int f2fs_set_bio_ctx_fio(struct f2fs_io_info *fio, struct bio *bio);
 
 /*
  * hash.c
@@ -3039,6 +3175,10 @@ void f2fs_destroy_node_manager_caches(void);
 /*
  * segment.c
  */
+unsigned long __find_rev_next_bit(const unsigned long *,
+	unsigned long, unsigned long);
+unsigned long __find_rev_next_zero_bit(const unsigned long *,
+	unsigned long, unsigned long);
 bool f2fs_need_SSR(struct f2fs_sb_info *sbi);
 void f2fs_register_inmem_page(struct inode *inode, struct page *page);
 void f2fs_drop_inmem_pages_all(struct f2fs_sb_info *sbi, bool gc_failure);
@@ -3093,6 +3233,9 @@ void f2fs_wait_on_block_writeback_range(struct inode *inode, block_t blkaddr,
 								block_t len);
 void f2fs_write_data_summaries(struct f2fs_sb_info *sbi, block_t start_blk);
 void f2fs_write_node_summaries(struct f2fs_sb_info *sbi, block_t start_blk);
+#ifdef CONFIG_F2FS_JOURNAL_APPEND
+void write_append_journal(struct f2fs_sb_info *sbi, block_t start_blk);
+#endif
 int f2fs_lookup_journal_in_cursum(struct f2fs_journal *journal, int type,
 			unsigned int val, int alloc);
 void f2fs_flush_sit_entries(struct f2fs_sb_info *sbi, struct cp_control *cpc);
@@ -3379,6 +3522,117 @@ int f2fs_build_stats(struct f2fs_sb_info *sbi);
 void f2fs_destroy_stats(struct f2fs_sb_info *sbi);
 void __init f2fs_create_root_stats(void);
 void f2fs_destroy_root_stats(void);
+
+/* for f2fs bigdata collections */
+/* unit for time: ns */
+enum {
+	HC_UNSET,
+	HC_HOT_DATA,
+	HC_WARM_DATA,
+	HC_COLD_DATA,
+	HC_HOT_NODE,
+	HC_WARM_NODE,
+	HC_COLD_NODE,
+	NR_CURSEG,
+	HC_META = NR_CURSEG,
+	HC_META_SB,
+	HC_META_CP,
+	HC_META_SIT,
+	HC_META_NAT,
+	HC_META_SSA,
+	HC_DIRECTIO,
+	HC_GC_COLD_DATA,
+	HC_REWRITE_HOT_DATA,
+	HC_REWRITE_WARM_DATA,
+	NR_HOTCOLD_TYPE,
+};
+struct f2fs_bigdata_info {
+	unsigned int cp_cnt, cp_succ_cnt;
+	u64 cp_time, max_cp_time, max_cp_submit_time,
+		max_cp_flush_meta_time, max_cp_discard_time;
+	/* avg_cp_time = cp_time / sbi->cp_cnt */
+
+	unsigned int discard_cnt, discard_blk_cnt, undiscard_cnt,
+		undiscard_blk_cnt;
+	u64 discard_time, max_discard_time;
+	/* avg_discard_time = discard_time / discard_cnt */
+
+	/* BG_GC = 0, FG_GC = 1 */
+	unsigned int gc_cnt[2], gc_fail_cnt[2],
+		gc_data_cnt[2], gc_node_cnt[2];
+	unsigned int gc_data_seg_cnt[2], gc_data_blk_cnt[2],
+		gc_node_seg_cnt[2], gc_node_blk_cnt[2];
+	u64 fggc_time;
+	/*
+	 * avg_[bg|fg]gc_data_seg_cnt = [bg|fg]gc_data_seg_cnt /
+	 *	[bg|fg]gc_data_cnt
+	 * avg_[bg|fg]gc_data_blk_cnt = [bg|fg]gc_data_blk_cnt /
+	 *	[bg|fg]gc_data_cnt
+	 * avg_fggc_time = fggc_time / fggc_cnt
+	 */
+	/* LFS = 0, SSR = 1 */
+	unsigned int node_alloc_cnt[2], data_alloc_cnt[2], data_ipu_cnt;
+
+	unsigned int fsync_reg_file_cnt, fsync_dir_cnt;
+	u64 fsync_time, max_fsync_time, fsync_cp_time, max_fsync_cp_time,
+		fsync_wr_file_time, max_fsync_wr_file_time, fsync_sync_node_time,
+		max_fsync_sync_node_time, fsync_flush_time, max_fsync_flush_time;
+
+	unsigned long hotcold_cnt[NR_HOTCOLD_TYPE];
+	unsigned long hotcold_gc_seg_cnt[NR_CURSEG];
+	unsigned long hotcold_gc_blk_cnt[NR_CURSEG];
+
+	union {
+		struct encrypt_struct {
+			unsigned int orig_corrupt:1;
+			unsigned int orig_nonexist:1;
+			unsigned int bak_corrupt:1;
+			unsigned int bak_nonexist:1;
+			unsigned int crc_corrupt:1;
+			unsigned int crc_nonexist:1;
+			unsigned int fixed:1;
+		} encrypt_struct;
+		unsigned int encrypt_val;
+	} encrypt;
+};
+
+static inline struct f2fs_bigdata_info *F2FS_BD_STAT(struct f2fs_sb_info *sbi)
+{
+	return (struct f2fs_bigdata_info *)sbi->bd_info;
+}
+
+#define inc_bd_val(sbi, member, val) do {			\
+	struct f2fs_bigdata_info *bd = F2FS_BD_STAT(sbi);	\
+	if (bd)							\
+		bd->member += (val);				\
+} while (0)
+#define inc_bd_array_val(sbi, member, idx, val) do {		\
+	struct f2fs_bigdata_info *bd = F2FS_BD_STAT(sbi);	\
+	if (bd)							\
+		bd->member[(idx)] += (val);			\
+} while (0)
+
+#define set_bd_val(sbi, member, val) do {			\
+	struct f2fs_bigdata_info *bd = F2FS_BD_STAT(sbi);	\
+	if (bd)							\
+		bd->member = (val);				\
+} while (0)
+#define set_bd_array_val(sbi, member, idx, val) do {		\
+	struct f2fs_bigdata_info *bd = F2FS_BD_STAT(sbi);	\
+	if (bd)							\
+		bd->member[(idx)] = (val);			\
+} while (0)
+
+#define max_bd_val(sbi, member, val) do {			\
+	struct f2fs_bigdata_info *bd = F2FS_BD_STAT(sbi);	\
+	if (bd) {						\
+		if (bd->member < (val))				\
+			bd->member = (val);			\
+	}							\
+} while (0)
+
+#define bd_mutex_lock(mutex) mutex_lock((mutex))
+#define bd_mutex_unlock(mutex) mutex_unlock((mutex))
 #else
 #define stat_inc_cp_count(si)				do { } while (0)
 #define stat_inc_bg_cp_count(si)			do { } while (0)
@@ -3417,6 +3671,14 @@ static inline int f2fs_build_stats(struct f2fs_sb_info *sbi) { return 0; }
 static inline void f2fs_destroy_stats(struct f2fs_sb_info *sbi) { }
 static inline void __init f2fs_create_root_stats(void) { }
 static inline void f2fs_destroy_root_stats(void) { }
+
+#define inc_bd_val(sbi, member, val)
+#define inc_bd_array_val(sbi, member, idx, val)
+#define set_bd_val(sbi, member, val)
+#define set_bd_array_val(sbi, member, idx, val)
+#define max_bd_val(sbi, member, val)
+#define bd_mutex_lock(mutex)
+#define bd_mutex_unlock(mutex)
 #endif
 
 extern const struct file_operations f2fs_dir_operations;
@@ -3639,7 +3901,7 @@ static inline bool f2fs_force_buffered_io(struct inode *inode,
 	struct f2fs_sb_info *sbi = F2FS_I_SB(inode);
 	int rw = iov_iter_rw(iter);
 
-	if (f2fs_post_read_required(inode))
+	if (f2fs_post_read_required(inode) && fscrypt_is_sw_encrypt(inode))
 		return true;
 	if (sbi->s_ndevs)
 		return true;

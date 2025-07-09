@@ -7,7 +7,9 @@
  */
 
 #include "fat.h"
-
+#ifdef CONFIG_HUAWEI_SDCARD_DSM
+#include <linux/mmc/dsm_sdcard.h>
+#endif
 /*
  * fat_fs_error reports a file system problem that might indicate fa data
  * corruption/inconsistency. Depending on 'errors' mount option the
@@ -35,6 +37,10 @@ void __fat_fs_error(struct super_block *sb, int report, const char *fmt, ...)
 	else if (opts->errors == FAT_ERRORS_RO && !sb_rdonly(sb)) {
 		sb->s_flags |= MS_RDONLY;
 		fat_msg(sb, KERN_ERR, "Filesystem has been set read-only");
+#ifdef CONFIG_HUAWEI_SDCARD_DSM
+		dsm_sdcard_report(DSM_SDCARD_STATUS_FILESYSTEM_ERR,
+			DSM_SDCARD_FILESYSTEM_ERR);
+#endif
 	}
 }
 EXPORT_SYMBOL_GPL(__fat_fs_error);

@@ -29,6 +29,9 @@
 
 #include "pnode.h"
 #include "internal.h"
+#ifdef CONFIG_HW_BFMR_MTK
+#include "chipset_common/bfmr/common/bfmr_common.h"
+#endif
 
 /* Maximum number of mounts in a mount namespace */
 unsigned int sysctl_mount_max __read_mostly = 100000;
@@ -1761,6 +1764,16 @@ SYSCALL_DEFINE2(umount, char __user *, name, int, flags)
 		goto dput_and_out;
 
 	retval = do_umount(mnt, flags);
+#ifdef CONFIG_HW_BFMR_MTK
+	char umount_name[BFMR_MOUNT_NAME_SIZE] = {0};
+
+	if (retval)
+		goto dput_and_out;
+	if (copy_from_user(umount_name, name, BFMR_MOUNT_NAME_SIZE-1) == 0)
+		bfmr_set_mount_state(umount_name, false, strlen(umount_name));
+#endif
+
+
 dput_and_out:
 	/* we mustn't call path_put() as that would clear mnt_expiry_mark */
 	dput(path.dentry);
@@ -2902,6 +2915,15 @@ long do_mount(const char *dev_name, const char __user *dir_name,
 	else
 		retval = do_new_mount(&path, type_page, sb_flags, mnt_flags,
 				      dev_name, data_page);
+#ifdef CONFIG_HW_BFMR_MTK
+	char mount_name[BFMR_MOUNT_NAME_SIZE] = {0};
+
+	if (retval)
+		goto dput_out;
+	if (copy_from_user(mount_name, dir_name, BFMR_MOUNT_NAME_SIZE-1) == 0)
+		bfmr_set_mount_state(mount_name, true, strlen(mount_name));
+#endif
+
 dput_out:
 	path_put(&path);
 	return retval;

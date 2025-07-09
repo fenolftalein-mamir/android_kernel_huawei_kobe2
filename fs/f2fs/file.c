@@ -123,6 +123,9 @@ static const struct vm_operations_struct f2fs_file_vm_ops = {
 	.fault		= f2fs_filemap_fault,
 	.map_pages	= filemap_map_pages,
 	.page_mkwrite	= f2fs_vm_page_mkwrite,
+#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
+	.suitable_for_spf = true,
+#endif
 };
 
 static int get_parent_ino(struct inode *inode, nid_t *pino)
@@ -208,6 +211,9 @@ static int f2fs_do_sync_file(struct file *file, loff_t start, loff_t end,
 		.nr_to_write = LONG_MAX,
 		.for_reclaim = 0,
 	};
+	u64 fsync_begin = 0, fsync_end = 0, wr_file_end, cp_begin = 0,
+		cp_end = 0, sync_node_begin = 0, sync_node_end = 0,
+		flush_begin = 0, flush_end = 0;
 	unsigned int seq_id = 0;
 
 	if (unlikely(f2fs_readonly(inode->i_sb) ||
@@ -219,10 +225,12 @@ static int f2fs_do_sync_file(struct file *file, loff_t start, loff_t end,
 	if (S_ISDIR(inode->i_mode))
 		goto go_write;
 
+	fsync_begin = local_clock();
 	/* if fdatasync is triggered, let's do in-place-update */
 	if (datasync || get_dirty_pages(inode) <= SM_I(sbi)->min_fsync_blocks)
 		set_inode_flag(inode, FI_NEED_IPU);
 	ret = file_write_and_wait_range(file, start, end);
+	wr_file_end = local_clock();
 	clear_inode_flag(inode, FI_NEED_IPU);
 
 	if (ret) {
@@ -262,7 +270,9 @@ go_write:
 
 	if (cp_reason) {
 		/* all the dirty node pages should be flushed for POR */
+		cp_begin = local_clock();
 		ret = f2fs_sync_fs(inode->i_sb, 1);
+		cp_end = local_clock();
 
 		/*
 		 * We've secured consistency through sync_fs. Following pino
@@ -274,6 +284,7 @@ go_write:
 		goto out;
 	}
 sync_nodes:
+	sync_node_begin = local_clock();
 	atomic_inc(&sbi->wb_sync_req[NODE]);
 	ret = f2fs_fsync_node_pages(sbi, inode, &wbc, atomic, &seq_id);
 	atomic_dec(&sbi->wb_sync_req[NODE]);
@@ -309,9 +320,13 @@ sync_nodes:
 	/* once recovery info is written, don't need to tack this */
 	f2fs_remove_ino_entry(sbi, ino, APPEND_INO);
 	clear_inode_flag(inode, FI_APPEND_WRITE);
+	sync_node_end = local_clock();
 flush_out:
-	if (!atomic && F2FS_OPTION(sbi).fsync_mode != FSYNC_MODE_NOBARRIER)
+	if (!atomic && F2FS_OPTION(sbi).fsync_mode != FSYNC_MODE_NOBARRIER) {
+		flush_begin = local_clock();
 		ret = f2fs_issue_flush(sbi, inode->i_ino);
+		flush_end = local_clock();
+	}
 	if (!ret) {
 		f2fs_remove_ino_entry(sbi, ino, UPDATE_INO);
 		clear_inode_flag(inode, FI_UPDATE_WRITE);
@@ -321,6 +336,30 @@ flush_out:
 out:
 	trace_f2fs_sync_file_exit(inode, cp_reason, datasync, ret);
 	f2fs_trace_ios(NULL, 1);
+	if (fsync_begin && !ret) {
+		fsync_end = local_clock();
+		bd_mutex_lock(&sbi->bd_mutex);
+		if (S_ISREG(inode->i_mode))
+			inc_bd_val(sbi, fsync_reg_file_cnt, 1);
+		else if (S_ISDIR(inode->i_mode))
+			inc_bd_val(sbi, fsync_dir_cnt, 1);
+		inc_bd_val(sbi, fsync_time, fsync_end - fsync_begin);
+		max_bd_val(sbi, max_fsync_time, fsync_end - fsync_begin);
+		inc_bd_val(sbi, fsync_wr_file_time, wr_file_end - fsync_begin);
+		max_bd_val(sbi, max_fsync_wr_file_time, wr_file_end -
+			fsync_begin);
+		inc_bd_val(sbi, fsync_cp_time, cp_end - cp_begin);
+		max_bd_val(sbi, max_fsync_cp_time, cp_end - cp_begin);
+		if (sync_node_end) {
+			inc_bd_val(sbi, fsync_sync_node_time,
+				   sync_node_end - sync_node_begin);
+			max_bd_val(sbi, max_fsync_sync_node_time,
+				   sync_node_end - sync_node_begin);
+		}
+		inc_bd_val(sbi, fsync_flush_time, flush_end - flush_begin);
+		max_bd_val(sbi, max_fsync_flush_time, flush_end - flush_begin);
+		bd_mutex_unlock(&sbi->bd_mutex);
+	}
 	return ret;
 }
 
@@ -1752,7 +1791,7 @@ static int f2fs_ioc_start_atomic_write(struct file *filp)
 	 * f2fs_is_atomic_file.
 	 */
 	if (get_dirty_pages(inode))
-		f2fs_msg(F2FS_I_SB(inode)->sb, KERN_WARNING,
+		f2fs_msg(F2FS_I_SB(inode)->sb, KERN_INFO,
 		"Unexpected flush for atomic writes: ino=%lu, npages=%u",
 					inode->i_ino, get_dirty_pages(inode));
 	ret = filemap_write_and_wait_range(inode->i_mapping, 0, LLONG_MAX);
@@ -2095,6 +2134,8 @@ out_err:
 	return err;
 }
 
+static int IOC_GC_count = 0;
+
 static int f2fs_ioc_gc(struct file *filp, unsigned long arg)
 {
 	struct inode *inode = file_inode(filp);
@@ -2124,7 +2165,15 @@ static int f2fs_ioc_gc(struct file *filp, unsigned long arg)
 		mutex_lock(&sbi->gc_mutex);
 	}
 
+	f2fs_msg(sbi->sb, KERN_INFO,
+		"IOC_GC: Size=%lldMB,Free=%lldMB,count=%d,sync=%d\n",
+		(le64_to_cpu(sbi->user_block_count) * sbi->blocksize) /1024/1024,
+		(le64_to_cpu(sbi->user_block_count - valid_user_blocks(sbi)) * sbi->blocksize) /1024/1024,
+		IOC_GC_count++, sync);
+
+	current->flags |= PF_MUTEX_GC;
 	ret = f2fs_gc(sbi, sync, true, NULL_SEGNO);
+	current->flags &= (~PF_MUTEX_GC);
 out:
 	mnt_drop_write_file(filp);
 	return ret;
@@ -2167,7 +2216,9 @@ do_more:
 		mutex_lock(&sbi->gc_mutex);
 	}
 
+	current->flags |= PF_MUTEX_GC;
 	ret = f2fs_gc(sbi, range.sync, true, GET_SEGNO(sbi, range.start));
+	current->flags &= (~PF_MUTEX_GC);
 	range.start += BLKS_PER_SEC(sbi);
 	if (range.start <= end)
 		goto do_more;
@@ -2603,7 +2654,9 @@ static int f2fs_ioc_flush_device(struct file *filp, unsigned long arg)
 		sm->last_victim[GC_CB] = end_segno + 1;
 		sm->last_victim[GC_GREEDY] = end_segno + 1;
 		sm->last_victim[ALLOC_NEXT] = end_segno + 1;
+		current->flags |= PF_MUTEX_GC;
 		ret = f2fs_gc(sbi, true, true, start_segno);
+		current->flags &= (~PF_MUTEX_GC);
 		if (ret == -EAGAIN)
 			ret = 0;
 		else if (ret < 0)
