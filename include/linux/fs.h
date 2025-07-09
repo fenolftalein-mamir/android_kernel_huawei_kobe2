@@ -31,6 +31,7 @@
 #include <linux/uidgid.h>
 #include <linux/lockdep.h>
 #include <linux/percpu-rwsem.h>
+#include <linux/blk_types.h>
 #include <linux/workqueue.h>
 #include <linux/delayed_call.h>
 #include <linux/uuid.h>
@@ -675,6 +676,12 @@ struct inode {
 #endif
 
 	void			*i_private; /* fs or device private pointer */
+#ifdef CONFIG_TASK_PROTECT_LRU
+	int			i_protect;
+#endif
+#ifdef CONFIG_FILE_MAP
+        struct file_map_entry *i_file_map;
+#endif
 } __randomize_layout;
 
 static inline unsigned int i_blocksize(const struct inode *node)
@@ -1802,6 +1809,8 @@ extern ssize_t vfs_read(struct file *, char __user *, size_t, loff_t *);
 extern ssize_t vfs_write(struct file *, const char __user *, size_t, loff_t *);
 extern ssize_t vfs_readv(struct file *, const struct iovec __user *,
 		unsigned long, loff_t *, rwf_t);
+extern ssize_t vfs_writev(struct file *, const struct iovec __user *,
+		unsigned long, loff_t *, int);
 extern ssize_t vfs_copy_file_range(struct file *, loff_t , struct file *,
 				   loff_t, size_t, unsigned int);
 extern int vfs_clone_file_prep_inodes(struct inode *inode_in, loff_t pos_in,
@@ -1853,6 +1862,9 @@ struct super_operations {
 				  struct shrink_control *);
 	long (*free_cached_objects)(struct super_block *,
 				    struct shrink_control *);
+#ifdef CONFIG_F2FS_JOURNAL_APPEND
+	void (*flush_mbio)(struct super_block *sb );
+#endif
 };
 
 /*
@@ -2923,6 +2935,57 @@ extern void inode_sb_list_add(struct inode *inode);
 
 #ifdef CONFIG_BLOCK
 extern int bdev_read_only(struct block_device *);
+#endif
+
+#ifdef CONFIG_BLK_DEV_THROTTLING
+#define THROTL_WB_SYNC_PAGE_CNT	128
+#define THROTL_WB_SYNC_BIO_CNT	8
+extern bool blk_throtl_get_quota(struct block_device *,
+				 unsigned int, unsigned long, bool);
+static inline void blk_throtl_get_quotas(struct block_device *bdev,
+					 unsigned int size,
+					 unsigned long jiffies_time_out,
+					 bool wait,
+					 unsigned int cnt)
+{
+	while (cnt--)
+		blk_throtl_get_quota(bdev, PAGE_SIZE,
+				     jiffies_time_out,
+				     wait);
+}
+#else
+static inline bool blk_throtl_get_quota(struct block_device *bdev,
+					unsigned int size,
+					unsigned long jiffies_time_out,
+					bool wait)
+{
+	return true;
+}
+static inline void blk_throtl_get_quotas(struct block_device *bdev,
+					 unsigned int size,
+					 unsigned long jiffies_time_out,
+					 bool wait,
+					 unsigned int cnt)
+{
+}
+#endif
+#ifdef CONFIG_BLK_WBT
+int wbt_max_bio_blocks(struct block_device *bdev, unsigned int opf, int max,
+		       bool *nomerge);
+bool wbt_need_kick_bio(struct bio *bio);
+bool wbt_fs_get_quota(struct request_queue *q, struct writeback_control *wbc);
+void wbt_fs_wait(struct request_queue *q, struct writeback_control *wbc);
+#else
+static inline bool wbt_need_kick_bio(struct bio *bio)
+{
+	return false;
+}
+static inline int wbt_max_bio_blocks(struct block_device *bdev,
+				     unsigned int opf,
+				     int max, bool *nomerge)
+{
+	return max;
+}
 #endif
 extern int set_blocksize(struct block_device *, int);
 extern int sb_set_blocksize(struct super_block *, int);

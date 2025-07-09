@@ -70,7 +70,7 @@ enum {
 enum {
 	CGRP_ROOT_NOPREFIX	= (1 << 1), /* mounted subsystems have no named prefix */
 	CGRP_ROOT_XATTR		= (1 << 2), /* supports extended attributes */
-
+	CGRP_ROOT_CPUSET_NOPREFIX	= (1 << 3), /* only cpuset have no named prefix */
 	/*
 	 * Consider namespaces as delegation boundaries.  If this flag is
 	 * set, controller specific interface files in a namespace root

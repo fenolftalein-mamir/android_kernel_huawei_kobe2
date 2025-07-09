@@ -344,6 +344,10 @@ struct vm_area_struct {
 	struct mempolicy *vm_policy;	/* NUMA policy for the VMA */
 #endif
 	struct vm_userfaultfd_ctx vm_userfaultfd_ctx;
+#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
+	seqcount_t vm_sequence;
+	atomic_t vm_ref_count;		/* see vma_get(), vma_put() */
+#endif
 } __randomize_layout;
 
 struct core_thread {
@@ -358,9 +362,15 @@ struct core_state {
 };
 
 struct kioctx_table;
+#ifdef CONFIG_BLK_DEV_THROTTLING
+struct blk_throtl_io_limit;
+#endif
 struct mm_struct {
 	struct vm_area_struct *mmap;		/* list of VMAs */
 	struct rb_root mm_rb;
+#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
+	rwlock_t mm_rb_lock;
+#endif
 	u64 vmacache_seqnum;                   /* per-thread vmacache */
 #ifdef CONFIG_MMU
 	unsigned long (*get_unmapped_area) (struct file *filp,
@@ -452,6 +462,9 @@ struct mm_struct {
 	spinlock_t			ioctx_lock;
 	struct kioctx_table __rcu	*ioctx_table;
 #endif
+#ifdef CONFIG_BLK_DEV_THROTTLING
+	struct blk_throtl_io_limit	*io_limit;
+#endif
 #ifdef CONFIG_MEMCG
 	/*
 	 * "owner" points to a task that is regarded as the canonical
@@ -511,6 +524,10 @@ struct mm_struct {
 #if IS_ENABLED(CONFIG_HMM)
 	/* HMM needs to track a few things per mm */
 	struct hmm *hmm;
+#endif
+
+#ifdef CONFIG_TASK_PROTECT_LRU
+	int protect;
 #endif
 } __randomize_layout;
 

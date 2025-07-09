@@ -229,6 +229,16 @@ struct sock_common {
 		u32		skc_tw_snd_nxt; /* struct tcp_timewait_sock */
 	};
 	/* public: */
+#ifdef CONFIG_HW_DPIMARK_MODULE
+	unsigned int	skc_hwdpi_mark;
+#endif
+#ifdef CONFIG_HW_NETQOS_SCHED
+	int             skc_netqos_level;
+	unsigned long   skc_netqos_time;
+	unsigned long   skc_netqos_ttime;
+	unsigned int    skc_netqos_tx;
+	unsigned int    skc_netqos_rx;
+#endif
 };
 
 /**
@@ -351,6 +361,14 @@ struct sock {
 #define sk_incoming_cpu		__sk_common.skc_incoming_cpu
 #define sk_flags		__sk_common.skc_flags
 #define sk_rxhash		__sk_common.skc_rxhash
+#define sk_hwdpi_mark		__sk_common.skc_hwdpi_mark
+#ifdef CONFIG_HW_NETQOS_SCHED
+#define sk_netqos_level		__sk_common.skc_netqos_level
+#define sk_netqos_time		__sk_common.skc_netqos_time
+#define sk_netqos_ttime		__sk_common.skc_netqos_ttime
+#define sk_netqos_tx		__sk_common.skc_netqos_tx
+#define sk_netqos_rx		__sk_common.skc_netqos_rx
+#endif
 
 	socket_lock_t		sk_lock;
 	atomic_t		sk_drops;
@@ -386,6 +404,10 @@ struct sock {
 		struct socket_wq __rcu	*sk_wq;
 		struct socket_wq	*sk_wq_raw;
 	};
+#ifdef CONFIG_HW_WIFIPRO
+	int wifipro_is_google_sock;
+	char wifipro_dev_name[IFNAMSIZ];
+#endif
 #ifdef CONFIG_XFRM
 	struct xfrm_policy __rcu *sk_policy[2];
 #endif
@@ -481,6 +503,18 @@ struct sock {
 	void                    (*sk_destruct)(struct sock *sk);
 	struct sock_reuseport __rcu	*sk_reuseport_cb;
 	struct rcu_head		sk_rcu;
+#ifdef CONFIG_HW_DPIMARK_MODULE
+	unsigned long	sk_born_stamp;
+#endif
+#ifdef CONFIG_HW_CHR_TCP_SMALL_WIN_MONITOR
+	unsigned int win_cnt;
+	unsigned int mime_type;
+	unsigned long small_win_stamp;
+	bool win_flag;
+#endif
+#ifdef CONFIG_CGROUP_BPF
+	char	sk_process_name[TASK_COMM_LEN];
+#endif
 };
 
 enum sk_pacing {

@@ -107,6 +107,12 @@ enum pageflags {
 	PG_young,
 	PG_idle,
 #endif
+#ifdef CONFIG_TASK_PROTECT_LRU
+	PG_protect,
+#endif
+#ifdef CONFIG_ZRAM_NON_COMPRESS
+	PG_non_compress,
+#endif
 	__NR_PAGEFLAGS,
 
 	/* Filesystems */
@@ -317,6 +323,11 @@ PAGEFLAG(Reclaim, reclaim, PF_NO_TAIL)
 PAGEFLAG(Readahead, reclaim, PF_NO_COMPOUND)
 	TESTCLEARFLAG(Readahead, reclaim, PF_NO_COMPOUND)
 
+#ifdef CONFIG_ZRAM_NON_COMPRESS
+PAGEFLAG(NonCompress, non_compress, PF_NO_TAIL)
+	TESTSCFLAG(NonCompress, non_compress, PF_NO_TAIL)
+#endif
+
 #ifdef CONFIG_HIGHMEM
 /*
  * Must use a macro here due to header dependency issues. page_zone() is not
@@ -370,6 +381,9 @@ PAGEFLAG_FALSE(HWPoison)
 #define __PG_HWPOISON 0
 #endif
 
+#ifdef CONFIG_TASK_PROTECT_LRU
+PAGEFLAG(Protect, protect, PF_ANY)
+#endif
 #if defined(CONFIG_IDLE_PAGE_TRACKING) && defined(CONFIG_64BIT)
 TESTPAGEFLAG(Young, young, PF_ANY)
 SETPAGEFLAG(Young, young, PF_ANY)

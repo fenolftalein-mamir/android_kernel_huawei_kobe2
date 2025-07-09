@@ -70,6 +70,12 @@ struct wakeup_source {
 	unsigned long		wakeup_count;
 	bool			active:1;
 	bool			autosleep_enabled:1;
+#ifdef CONFIG_HUAWEI_KSTATE
+	u8			lock_timeout;
+#endif
+#ifdef CONFIG_HUAWEI_DUBAI
+	bool			lasting:1;
+#endif
 };
 
 #ifdef CONFIG_PM_SLEEP
@@ -203,6 +209,16 @@ static inline void wakeup_source_trash(struct wakeup_source *ws)
 	wakeup_source_drop(ws);
 }
 
+#ifdef CONFIG_HUAWEI_KSTATE
+int wakeup_source_set(char *name, u8 lock_timeout);
+int wake_unlock_by_name(char *name);
+int wakeup_source_set_all(u8 lock_timeout);
+int wake_unlock_all(unsigned int msec);
+#endif
+
+#ifdef CONFIG_HUAWEI_DUBAI
+int wakeup_source_getlastingname(char *ws_namelist, int size, int count);
+#endif
 static inline void __pm_wakeup_event(struct wakeup_source *ws, unsigned int msec)
 {
 	return pm_wakeup_ws_event(ws, msec, false);

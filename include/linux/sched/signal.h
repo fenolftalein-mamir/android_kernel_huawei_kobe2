@@ -220,10 +220,23 @@ struct signal_struct {
 	struct mm_struct *oom_mm;	/* recorded mm when the thread group got
 					 * killed by the oom killer */
 
+#ifdef CONFIG_HW_DIE_CATCH
+	unsigned short unexpected_die_catch_flags;
+#endif
+
 	struct mutex cred_guard_mutex;	/* guard against foreign influences on
 					 * credential calculations
 					 * (notably. ptrace) */
 } __randomize_layout;
+
+#ifdef CONFIG_HW_DIE_CATCH
+/* when processdie by SIGKILL,SIGTERM , send SIGABORT to notify userspace */
+#define KILL_CATCH_FLAG     		0x1
+/* when process die by system call exit , than print the log*/
+#define EXIT_CATCH_FLAG     		0x2
+/* when process die by system call exit , send SIGABORT to notify userspace */
+#define EXIT_CATCH_ABORT_FLAG     	0x4
+#endif
 
 /*
  * Bits in flags field of signal_struct.

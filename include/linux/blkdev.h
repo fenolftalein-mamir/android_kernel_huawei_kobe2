@@ -50,11 +50,26 @@ struct blk_stat_callback;
 /* Must be consisitent with blk_mq_poll_stats_bkt() */
 #define BLK_MQ_POLL_STATS_BKTS 16
 
+#define BLK_MIN_BG_DEPTH	2
+#define BLK_MIN_DEPTH_ON	16
+
 /*
  * Maximum number of blkcg policies allowed to be registered concurrently.
  * Defined here to simplify include dependency.
  */
 #define BLKCG_MAX_POLS		3
+
+#ifdef CONFIG_ROW_VIP_QUEUE
+
+#ifndef BLKIO_QOS_HIGH
+#define BLKIO_QOS_HIGH		VALUE_QOS_HIGH
+#endif
+
+#ifndef BBLKIO_QOS_DEFAULT
+#define BLKIO_QOS_DEFAULT	VALUE_QOS_NORMAL
+#endif
+
+#endif
 
 typedef void (rq_end_io_fn)(struct request *, blk_status_t);
 
@@ -134,6 +149,7 @@ typedef __u32 __bitwise req_flags_t;
  */
 struct request {
 	struct list_head queuelist;
+	struct list_head fg_bg_list;
 	union {
 		struct __call_single_data csd;
 		u64 fifo_time;
@@ -313,6 +329,7 @@ struct blk_queue_tag {
 	unsigned long *tag_map;		/* bit map of free/busy tags */
 	int max_depth;			/* what we will send to device */
 	int real_max_depth;		/* what the array can hold */
+	int max_bg_depth;		/* what we will send to device from bg thread */
 	atomic_t refcnt;		/* map can be shared */
 	int alloc_policy;		/* tag allocation policy */
 	int next_tag;			/* next tag */
@@ -406,6 +423,8 @@ struct request_queue {
 	 * Together with queue_head for cacheline sharing
 	 */
 	struct list_head	queue_head;
+	struct list_head	fg_head;
+	struct list_head	bg_head;
 	struct request		*last_merge;
 	struct elevator_queue	*elevator;
 	int			nr_rqs[2];	/* # allocated [a]sync rqs */
@@ -533,7 +552,7 @@ struct request_queue {
 	struct list_head	tag_busy_list;
 
 	unsigned int		nr_sorted;
-	unsigned int		in_flight[2];
+	unsigned int		in_flight[4];
 
 	/*
 	 * Number of active block driver functions for which blk_drain_queue()
@@ -617,6 +636,13 @@ struct request_queue {
 
 #define BLK_MAX_WRITE_HINTS	5
 	u64			write_hints[BLK_MAX_WRITE_HINTS];
+
+	unsigned long		bw_timestamp;
+	unsigned long		last_ticks;
+	sector_t		last_sects[2];
+	unsigned long		last_ios[2];
+	sector_t		disk_bw;
+	unsigned long		disk_iops;
 };
 
 #define QUEUE_FLAG_QUEUED	0	/* uses generic tag queueing */
@@ -649,6 +675,10 @@ struct request_queue {
 #define QUEUE_FLAG_REGISTERED  26	/* queue has been registered to a disk */
 #define QUEUE_FLAG_SCSI_PASSTHROUGH 27	/* queue supports SCSI commands */
 #define QUEUE_FLAG_QUIESCED    28	/* queue has been quiesced */
+#define QUEUE_FLAG_INLINECRYPT 29	/* inline crypto support */
+#ifdef CONFIG_ROW_VIP_QUEUE
+#define QUEUE_FLAG_QOS         30
+#endif
 
 #define QUEUE_FLAG_DEFAULT	((1 << QUEUE_FLAG_IO_STAT) |		\
 				 (1 << QUEUE_FLAG_STACKABLE)	|	\
@@ -728,6 +758,57 @@ static inline void queue_flag_clear(unsigned int flag, struct request_queue *q)
 	__clear_bit(flag, &q->queue_flags);
 }
 
+#ifdef CONFIG_BLK_DEV_HI_PRIO_FOR_FG
+static inline void queue_throtl_add_request(struct request_queue *q,
+					    struct request *rq, bool front)
+{
+	struct list_head *head;
+
+	if (rq->cmd_flags & REQ_FG)
+		head = &q->fg_head;
+	else
+		head = &q->bg_head;
+
+	if (front)
+		list_add(&rq->fg_bg_list, head);
+	else
+		list_add_tail(&rq->fg_bg_list, head);
+}
+
+static inline void queue_throtl_add_inflight(struct request_queue *q,
+					     struct request *rq)
+{
+	if (rq->cmd_flags & REQ_FG)
+		q->in_flight[BLK_RW_FG]++;
+	else
+		q->in_flight[BLK_RW_BG]++;
+}
+
+static inline void queue_throtl_dec_inflight(struct request_queue *q,
+					     struct request *rq)
+{
+	if (rq->cmd_flags & REQ_FG)
+		q->in_flight[BLK_RW_FG]--;
+	else
+		q->in_flight[BLK_RW_BG]--;
+}
+#else
+static inline void queue_throtl_add_request(struct request_queue *q,
+					    struct request *rq, bool front)
+{
+}
+
+static inline void queue_throtl_add_inflight(struct request_queue *q,
+					     struct request *rq)
+{
+}
+
+static inline void queue_throtl_dec_inflight(struct request_queue *q,
+					     struct request *rq)
+{
+}
+#endif
+
 #define blk_queue_tagged(q)	test_bit(QUEUE_FLAG_QUEUED, &(q)->queue_flags)
 #define blk_queue_stopped(q)	test_bit(QUEUE_FLAG_STOPPED, &(q)->queue_flags)
 #define blk_queue_dying(q)	test_bit(QUEUE_FLAG_DYING, &(q)->queue_flags)
@@ -748,6 +829,12 @@ static inline void queue_flag_clear(unsigned int flag, struct request_queue *q)
 #define blk_queue_dax(q)	test_bit(QUEUE_FLAG_DAX, &(q)->queue_flags)
 #define blk_queue_scsi_passthrough(q)	\
 	test_bit(QUEUE_FLAG_SCSI_PASSTHROUGH, &(q)->queue_flags)
+#define blk_queue_inline_crypt(q) \
+	test_bit(QUEUE_FLAG_INLINECRYPT, &(q)->queue_flags)
+
+#ifdef CONFIG_ROW_VIP_QUEUE
+#define blk_queue_qos_on(q)	test_bit(QUEUE_FLAG_QOS, &(q)->queue_flags)
+#endif
 
 #define blk_noretry_request(rq) \
 	((rq)->cmd_flags & (REQ_FAILFAST_DEV|REQ_FAILFAST_TRANSPORT| \
@@ -808,6 +895,13 @@ static inline bool rq_is_sync(struct request *rq)
 {
 	return op_is_sync(rq->cmd_flags);
 }
+
+#ifdef CONFIG_ROW_VIP_QUEUE
+static inline bool rq_is_vip(struct request *rq)
+{
+	return rq->cmd_flags & REQ_VIP;
+}
+#endif
 
 static inline bool blk_rl_full(struct request_list *rl, bool sync)
 {
@@ -1964,6 +2058,7 @@ struct block_device_operations {
 	int (*getgeo)(struct block_device *, struct hd_geometry *);
 	/* this callback is with swap_lock and sometimes page table lock held */
 	void (*swap_slot_free_notify) (struct block_device *, unsigned long);
+	int (*check_disk_range_wp)(struct gendisk *d, sector_t s, sector_t l);
 	struct module *owner;
 	const struct pr_ops *pr_ops;
 };

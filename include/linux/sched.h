@@ -205,7 +205,43 @@ struct task_group;
 
 /* Task command name length: */
 #define TASK_COMM_LEN			16
-
+#ifdef CONFIG_HW_VIP_THREAD
+enum DYNAMIC_VIP_TYPE
+{
+	DYNAMIC_VIP_BINDER = 0,
+	DYNAMIC_VIP_RWSEM,
+	DYNAMIC_VIP_MUTEX,
+	DYNAMIC_VIP_SEM,
+	DYNAMIC_VIP_FUTEX,
+	DYNAMIC_VIP_MAX,
+};
+#define VIP_MSG_LEN (unsigned long)64
+#define VIP_DEPTH_MAX 2
+#endif
+#ifdef CONFIG_HW_QOS_THREAD
+enum DYNAMIC_QOS_TYPE {
+	DYNAMIC_QOS_BINDER = 0,
+	DYNAMIC_QOS_RWSEM,
+	DYNAMIC_QOS_MUTEX,
+	DYNAMIC_QOS_FUTEX,
+	DYNAMIC_QOS_TYPE_MAX,
+};
+enum DYNAMIC_QOS_VALUE {
+	VALUE_QOS_INVALID = -1,
+	VALUE_QOS_LOW = 0,
+	VALUE_QOS_NORMAL,
+	VALUE_QOS_HIGH,
+	VALUE_QOS_CRITICAL,
+	VALUE_QOS_MAX,
+};
+enum DYNAMIC_QOS_OPERATION {
+	OPERATION_QOS_SET_THREAD = 0,
+	OPERATION_QOS_SET_PROCESS,
+	OPERATION_QOS_ENQUEUE,
+	OPERATION_QOS_DEQUEUE,
+	OPERATION_QOS_MAX,
+};
+#endif
 enum task_event {
 	PUT_PREV_TASK   = 0,
 	PICK_NEXT_TASK  = 1,
@@ -220,6 +256,10 @@ extern cpumask_var_t			cpu_isolated_map;
 extern void scheduler_tick(void);
 
 #define	MAX_SCHEDULE_TIMEOUT		LONG_MAX
+
+#ifdef CONFIG_DEBUG_PREEMPT
+#define PREEMPT_DISABLE_DEEPTH 5
+#endif
 
 extern long schedule_timeout(long timeout);
 extern long schedule_timeout_interruptible(long timeout);
@@ -290,6 +330,14 @@ struct vtime {
 	u64			gtime;
 };
 
+enum uclamp_id {
+	UCLAMP_MIN = 0, /* Minimum utilization */
+	UCLAMP_MAX,     /* Maximum utilization */
+
+	/* Utilization clamping constraints count */
+	UCLAMP_CNT
+};
+
 struct sched_info {
 #ifdef CONFIG_SCHED_INFO
 	/* Cumulative counters: */
@@ -320,6 +368,32 @@ struct sched_info {
  */
 # define SCHED_FIXEDPOINT_SHIFT		10
 # define SCHED_FIXEDPOINT_SCALE		(1L << SCHED_FIXEDPOINT_SHIFT)
+
+/*
+ * Increase resolution of cpu_capacity calculations
+ */
+# define SCHED_CAPACITY_SHIFT		SCHED_FIXEDPOINT_SHIFT
+# define SCHED_CAPACITY_SCALE		(1L << SCHED_CAPACITY_SHIFT)
+
+static inline unsigned int scale_from_percent(unsigned int pct)
+{
+	WARN_ON(pct > 100);
+
+	return ((SCHED_FIXEDPOINT_SCALE * pct) / 100);
+}
+
+static inline unsigned int scale_to_percent(unsigned int value)
+{
+	unsigned int rounding = 0;
+
+	WARN_ON(value > SCHED_FIXEDPOINT_SCALE);
+
+	/* Compensate rounding errors for: 0, 256, 512, 768, 1024 */
+	if (likely((value & 0xFF) && ~(value & 0x700)))
+		rounding = 1;
+
+	return (rounding + ((100 * value) / SCHED_FIXEDPOINT_SCALE));
+}
 
 struct load_weight {
 	unsigned long			weight;
@@ -414,6 +488,15 @@ struct sched_avg {
 	unsigned long			load_avg;
 	unsigned long			util_avg;
 	struct util_est			util_est;
+	unsigned long loadwop_avg, loadwop_sum;
+#ifdef CONFIG_SCHED_HMP
+	unsigned long pending_load;
+	u32 nr_pending;
+	u32 nr_dequeuing_low_prio;
+	u32 nr_normal_prio;
+	u64 hmp_last_up_migration;
+	u64 hmp_last_down_migration;
+#endif /* CONFIG_SCHED_HMP */
 };
 
 struct sched_statistics {
@@ -462,6 +545,16 @@ struct sched_entity {
 	u64				exec_start;
 	u64				sum_exec_runtime;
 	u64				vruntime;
+#ifdef CONFIG_SCHED_HMP
+	unsigned long pending_load;
+	u32 nr_pending;
+#ifdef CONFIG_SCHED_HMP_PRIO_FILTER
+	u32 nr_dequeuing_low_prio;
+	u32 nr_normal_prio;
+#endif
+	u64 hmp_last_up_migration;
+	u64 hmp_last_down_migration;
+#endif /* CONFIG_SCHED_HMP */
 	u64				prev_sum_exec_runtime;
 
 	u64				nr_migrations;
@@ -485,6 +578,10 @@ struct sched_entity {
 	 * collide with read-mostly values above.
 	 */
 	struct sched_avg		avg ____cacheline_aligned_in_smp;
+#endif
+
+#ifdef CONFIG_MTK_RT_THROTTLE_MON
+	u64			mtk_isr_time;
 #endif
 };
 
@@ -606,6 +703,62 @@ struct sched_dl_entity {
 	struct hrtimer inactive_timer;
 };
 
+#ifdef CONFIG_UCLAMP_TASK
+/*
+ * Number of utiliation clamp groups
+ *
+ * The first clamp group (group_id=0) is used to track non clamped tasks, i.e.
+ * util_{min,max} (0,SCHED_CAPACITY_SCALE). Thus we allocate one more group in
+ * addition to the configured number.
+ */
+#define UCLAMP_GROUPS (CONFIG_UCLAMP_GROUPS_COUNT + 1)
+
+/**
+ * Utilization clamp group
+ *
+ * A utilization clamp group maps a:
+ *   clamp value (value), i.e.
+ *   util_{min,max} value requested from userspace
+ * to a:
+ *   clamp group index (group_id), i.e.
+ *   index of the per-cpu RUNNABLE tasks refcounting array
+ *
+ * The mapped bit is set whenever a scheduling entity has been mapped on a
+ * clamp group for the first time. When this bit is set, any clamp group get
+ * (for a new clamp value) will be matches by a clamp group put (for the old
+ * clamp value).
+ *
+ * The user_defined bit is set whenever a task has got a task-specific clamp
+ * value requested from userspace, i.e. the system defaults applies to this
+ * task just as a restriction. This allows to relax TG's clamps when a less
+ * restrictive task specific value has been defined, thus allowing to
+ * implement a "nice" semantic when both task group and task specific values
+ * are used. For example, a task running on a 20% boosted TG can still drop
+ * its own boosting to 0%.
+ */
+struct uclamp_se {
+	unsigned int value;
+	unsigned int group_id;
+	unsigned int mapped;
+	unsigned int active;
+	unsigned int user_defined;
+	/*
+	 * Clamp group and value actually used by a scheduling entity,
+	 * i.e. a (RUNNABLE) task or a task group.
+	 * For task groups, this is the value (eventually) enforced by a
+	 * parent task group.
+	 * For a task, this is the value (eventually) enforced by the
+	 * task group the task is currently part of or by the system
+	 * default clamp values, whichever is the most restrictive.
+	 */
+	struct {
+		unsigned int value	: SCHED_CAPACITY_SHIFT + 1;
+		unsigned int group_id	: order_base_2(UCLAMP_GROUPS);
+	} effective;
+};
+#endif /* CONFIG_UCLAMP_TASK */
+
+
 union rcu_special {
 	struct {
 		u8			blocked;
@@ -629,6 +782,19 @@ struct wake_q_node {
 	struct wake_q_node *next;
 };
 
+#ifdef CONFIG_HUAWEI_SWAP_ZDATA
+struct reclaim_result {
+	unsigned nr_reclaimed;
+	unsigned nr_writedblock;
+	s64 elapsed_centisecs64;
+};
+#endif
+#ifdef CONFIG_BLK_DEV_THROTTLING
+struct blk_throtl_wb_stat {
+	u32 bios;
+};
+#endif
+
 struct task_struct {
 #ifdef CONFIG_THREAD_INFO_IN_TASK
 	/*
@@ -650,8 +816,26 @@ struct task_struct {
 	atomic_t			usage;
 	/* Per task flags (PF_*), defined further below: */
 	unsigned int			flags;
+#ifdef CONFIG_HW_CGROUP_WORKINGSET
+	unsigned int			ext_flags;
+#endif
 	unsigned int			ptrace;
 
+#ifdef CONFIG_HW_VIP_THREAD
+	int static_vip;
+	int vip_depth;
+	atomic64_t dynamic_vip;
+	struct list_head vip_entry;
+	u64 enqueue_time;
+	u64 dynamic_vip_start;
+#endif
+#ifdef CONFIG_HW_QOS_THREAD
+	struct set_qos *proc_qos; // qos of process
+	struct set_qos thread_qos; // qos of thread
+	struct trans_qos_allow *trans_allowed;
+	atomic_t trans_flags;
+	struct transact_qos trans_qos[DYNAMIC_QOS_TYPE_MAX];
+#endif
 #ifdef CONFIG_SMP
 	struct llist_node		wake_entry;
 	int				on_cpu;
@@ -666,6 +850,9 @@ struct task_struct {
 	int				wake_cpu;
 #endif
 	int				on_rq;
+#ifdef CONFIG_MTK_SCHED_BOOST
+	int				cpu_prefer;
+#endif
 
 	int				prio;
 	int				static_prio;
@@ -684,11 +871,17 @@ struct task_struct {
 	u32 init_load_pct;
 	u64 last_sleep_ts;
 #endif
+	u64 last_enqueued_ts;
 
 #ifdef CONFIG_CGROUP_SCHED
 	struct task_group		*sched_task_group;
 #endif
 	struct sched_dl_entity		dl;
+
+#ifdef CONFIG_UCLAMP_TASK
+	/* Utlization clamp values for this task */
+	struct uclamp_se		uclamp[UCLAMP_CNT];
+#endif
 
 #ifdef CONFIG_PREEMPT_NOTIFIERS
 	/* List of struct preempt_notifier: */
@@ -865,6 +1058,15 @@ struct task_struct {
 	unsigned long			min_flt;
 	unsigned long			maj_flt;
 
+#ifdef CONFIG_MTK_MLOG
+	/* Page-in/out accounting for filemap fault and swap */
+	unsigned long			fm_flt;
+#ifdef CONFIG_SWAP
+	unsigned long			swap_in;
+	unsigned long			swap_out;
+#endif
+#endif
+
 #ifdef CONFIG_POSIX_TIMERS
 	struct task_cputime		cputime_expires;
 	struct list_head		cpu_timers[3];
@@ -972,7 +1174,7 @@ struct task_struct {
 #endif
 
 #ifdef CONFIG_LOCKDEP
-# define MAX_LOCK_DEPTH			48UL
+# define MAX_LOCK_DEPTH			32UL
 	u64				curr_chain_key;
 	int				lockdep_depth;
 	unsigned int			lockdep_recursion;
@@ -1003,6 +1205,9 @@ struct task_struct {
 #ifdef CONFIG_BLOCK
 	/* Stack plugging: */
 	struct blk_plug			*plug;
+#endif
+#ifdef CONFIG_BLK_DEV_THROTTLING
+	struct blk_throtl_wb_stat wb_stat;
 #endif
 
 	/* VM state: */
@@ -1062,6 +1267,7 @@ struct task_struct {
 #endif
 #ifdef CONFIG_DEBUG_PREEMPT
 	unsigned long			preempt_disable_ip;
+	unsigned long preempt_disable_ips[PREEMPT_DISABLE_DEEPTH];
 #endif
 #ifdef CONFIG_NUMA
 	/* Protected by alloc_lock: */
@@ -1225,6 +1431,9 @@ struct task_struct {
 	/* A live task holds one reference: */
 	atomic_t			stack_refcount;
 #endif
+#ifdef CONFIG_HUAWEI_SWAP_ZDATA
+	struct reclaim_result *proc_reclaimed_result;
+#endif
 #ifdef CONFIG_LIVEPATCH
 	int patch_state;
 #endif
@@ -1233,6 +1442,9 @@ struct task_struct {
 	void				*security;
 #endif
 
+#ifdef CONFIG_PREEMPT_MONITOR
+	unsigned long preempt_dur;
+#endif
 	/*
 	 * New fields for task_struct should be added above here, so that
 	 * they are included in the randomized portion of task_struct.
@@ -1453,9 +1665,15 @@ extern struct pid *cad_pid;
 #define PF_MEMSTALL		0x01000000	/* Stalled due to lack of memory */
 #define PF_NO_SETAFFINITY	0x04000000	/* Userland is not allowed to meddle with cpus_allowed */
 #define PF_MCE_EARLY		0x08000000      /* Early kill for mce process policy */
+#define PF_MUTEX_GC		0x10000000	/* whether this task hold the GC mutex */
 #define PF_MUTEX_TESTER		0x20000000	/* Thread belongs to the rt mutex tester */
 #define PF_FREEZER_SKIP		0x40000000	/* Freezer should not count it as freezable */
 #define PF_SUSPEND_TASK		0x80000000      /* This thread called freeze_processes() and should not be frozen */
+
+#ifdef CONFIG_HW_CGROUP_WORKINGSET
+#define PF_EXT_WSCG_MONITOR	0x00000001	/* I am in a workingset cgroup of monitor*/
+#define PF_EXT_WSCG_PREREAD	0x00000002	/* I am a thread preread workingset by myself */
+#endif
 
 /*
  * Only the _current_ task can read/write to tsk->flags, but other
@@ -1503,6 +1721,14 @@ static inline bool is_percpu_thread(void)
 #define PFA_SPEC_SSB_FORCE_DISABLE	4	/* Speculative Store Bypass force disabled*/
 #define PFA_SPEC_IB_DISABLE		5	/* Indirect branch speculation restricted */
 #define PFA_SPEC_IB_FORCE_DISABLE	6	/* Indirect branch speculation permanently restricted */
+#define PFA_LMK_WAITING			7	/* Lowmemorykiller is waiting */
+
+
+#define PFA_SLEEP_ON_THROTL	25
+#define PFA_FLUSHER		26
+#define PFA_IN_PAGEFAULT	27
+#define PFA_IN_WB_THRD		28
+#define PFA_IN_PAGEFAULT_DELAY_CLEAR  29
 
 #define TASK_PFA_TEST(name, func)					\
 	static inline bool task_##func(struct task_struct *p)		\
@@ -1540,6 +1766,29 @@ TASK_PFA_CLEAR(SPEC_IB_DISABLE, spec_ib_disable)
 
 TASK_PFA_TEST(SPEC_IB_FORCE_DISABLE, spec_ib_force_disable)
 TASK_PFA_SET(SPEC_IB_FORCE_DISABLE, spec_ib_force_disable)
+
+TASK_PFA_TEST(LMK_WAITING, lmk_waiting)
+TASK_PFA_SET(LMK_WAITING, lmk_waiting)
+
+TASK_PFA_TEST(SLEEP_ON_THROTL, sleep_on_throtl)
+TASK_PFA_SET(SLEEP_ON_THROTL, sleep_on_throtl)
+TASK_PFA_CLEAR(SLEEP_ON_THROTL, sleep_on_throtl)
+
+TASK_PFA_TEST(FLUSHER, flusher)
+TASK_PFA_SET(FLUSHER, flusher)
+TASK_PFA_CLEAR(FLUSHER, flusher)
+
+TASK_PFA_TEST(IN_PAGEFAULT, in_pagefault)
+TASK_PFA_SET(IN_PAGEFAULT, in_pagefault)
+TASK_PFA_CLEAR(IN_PAGEFAULT, in_pagefault)
+
+TASK_PFA_TEST(IN_WB_THRD, in_wb_thrd)
+TASK_PFA_SET(IN_WB_THRD, in_wb_thrd)
+TASK_PFA_CLEAR(IN_WB_THRD, in_wb_thrd)
+
+TASK_PFA_TEST(IN_PAGEFAULT_DELAY_CLEAR, in_pagefault_delay_clear)
+TASK_PFA_SET(IN_PAGEFAULT_DELAY_CLEAR, in_pagefault_delay_clear)
+TASK_PFA_CLEAR(IN_PAGEFAULT_DELAY_CLEAR, in_pagefault_delay_clear)
 
 static inline void
 current_restore_flags(unsigned long orig_flags, unsigned long flags)
@@ -1824,4 +2073,9 @@ extern long sched_getaffinity(pid_t pid, struct cpumask *mask);
 #define TASK_SIZE_OF(tsk)	TASK_SIZE
 #endif
 
+#include <linux/sched/sched.h>
+#endif
+
+#ifdef CONFIG_SCHED_TUNE
+extern int set_stune_task_threshold(int threshold);
 #endif

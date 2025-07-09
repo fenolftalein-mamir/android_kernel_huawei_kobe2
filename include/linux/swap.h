@@ -18,6 +18,8 @@ struct notifier_block;
 
 struct bio;
 
+extern int free_swapcache_aggressively;
+
 #define SWAP_FLAG_PREFER	0x8000	/* set if swap priority specified */
 #define SWAP_FLAG_PRIO_MASK	0x7fff
 #define SWAP_FLAG_PRIO_SHIFT	0
@@ -337,8 +339,14 @@ extern void swap_setup(void);
 
 extern void add_page_to_unevictable_list(struct page *page);
 
-extern void lru_cache_add_active_or_unevictable(struct page *page,
-						struct vm_area_struct *vma);
+extern void __lru_cache_add_active_or_unevictable(struct page *page,
+						unsigned long vma_flags);
+
+static inline void lru_cache_add_active_or_unevictable(struct page *page,
+						struct vm_area_struct *vma)
+{
+	return __lru_cache_add_active_or_unevictable(page, vma->vm_flags);
+}
 
 /* linux/mm/vmscan.c */
 extern unsigned long zone_reclaimable_pages(struct zone *zone);
@@ -358,6 +366,12 @@ extern unsigned long shrink_all_memory(unsigned long nr_pages);
 extern int vm_swappiness;
 extern int remove_mapping(struct address_space *mapping, struct page *page);
 extern unsigned long vm_total_pages;
+
+#ifdef CONFIG_HUAWEI_RCC
+#define RCC_MODE_ANON   1
+#define RCC_MODE_FILE   2
+int try_to_free_pages_ex(int nr_pages, int mode);
+#endif
 
 #ifdef CONFIG_NUMA
 extern int node_reclaim_mode;
@@ -672,7 +686,7 @@ static inline long mem_cgroup_get_nr_swap_pages(struct mem_cgroup *memcg)
 
 static inline bool mem_cgroup_swap_full(struct page *page)
 {
-	return vm_swap_full();
+	return free_swapcache_aggressively ? true : vm_swap_full();
 }
 #endif
 

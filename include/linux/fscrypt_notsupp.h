@@ -68,6 +68,21 @@ static inline void fscrypt_restore_control_page(struct page *page)
 	return;
 }
 
+static inline struct page *fscrypt_encrypt_dio_page(struct inode *inode,
+	struct page *plaintext_page,
+	unsigned int len,
+	unsigned int offs,
+	u64 lblk_num, gfp_t gfp_flags)
+{
+	return ERR_PTR(-EOPNOTSUPP);
+}
+
+static inline int fscrypt_decrypt_dio_page(struct inode *inode, struct page *page,
+	unsigned int len, unsigned int offs, u64 lblk_num)
+{
+	return -EOPNOTSUPP;
+}
+
 /* policy.c */
 static inline int fscrypt_ioctl_set_policy(struct file *filp,
 					   const void __user *arg)
@@ -93,6 +108,28 @@ static inline int fscrypt_inherit_context(struct inode *parent,
 	return -EOPNOTSUPP;
 }
 
+static inline int fscrypt_set_bio_ctx(struct inode *inode,
+	struct bio *bio)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int fscrypt_key_payload(struct bio_crypt_ctx *ctx,
+	const unsigned char **key)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int fscrypt_is_hw_encrypt(const struct inode *inode)
+{
+	return 0;
+}
+
+static inline int fscrypt_is_sw_encrypt(const struct inode *inode)
+{
+	return 0;
+}
+
 /* keyinfo.c */
 static inline int fscrypt_get_encryption_info(struct inode *inode)
 {
@@ -102,6 +139,11 @@ static inline int fscrypt_get_encryption_info(struct inode *inode)
 static inline void fscrypt_put_encryption_info(struct inode *inode)
 {
 	return;
+}
+
+static inline void *fscrypt_crypt_info_act(void *ci, int act)
+{
+	return NULL;
 }
 
  /* fname.c */
@@ -161,6 +203,12 @@ static inline void fscrypt_decrypt_bio(struct bio *bio)
 static inline void fscrypt_enqueue_decrypt_bio(struct fscrypt_ctx *ctx,
 					       struct bio *bio)
 {
+}
+
+static inline void fscrypt_decrypt_dio_bio_pages(struct fscrypt_ctx *ctx, struct bio *bio,
+	work_func_t func)
+{
+	return;
 }
 
 static inline void fscrypt_pullback_bio_page(struct page **page, bool restore)

@@ -339,6 +339,15 @@ struct tcp_sock {
 		u64	time;
 	} rcvq_space;
 
+#ifdef CONFIG_HW_NETQOS_SCHED
+	struct {
+		u32	segs;
+		u32	min_rtt;
+		u32	bw;
+		u32	rcv_wnd;
+	} rcv_rate;
+#endif
+
 /* TCP-specific MTU probe information. */
 	struct {
 		u32		  probe_seq_start;
@@ -363,6 +372,10 @@ struct tcp_sock {
 	 */
 	struct request_sock *fastopen_rsk;
 	u32	*saved_syn;
+#ifdef CONFIG_CHR_NETLINK_MODULE
+	u8	first_data_flag;
+	u8	data_net_flag;
+#endif
 };
 
 enum tsq_enum {
