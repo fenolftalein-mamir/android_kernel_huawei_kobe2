@@ -39,6 +39,8 @@
 #include <linux/sched/signal.h>
 #include <linux/mm_inline.h>
 #include <trace/events/writeback.h>
+#include <mt-plat/mtk_blocktag.h>
+#include <linux/blk-cgroup.h>
 
 #include "internal.h"
 
@@ -1248,11 +1250,6 @@ static void wb_update_dirty_ratelimit(struct dirty_throttle_control *dtc,
 	 */
 	balanced_dirty_ratelimit = div_u64((u64)task_ratelimit * write_bw,
 					   dirty_rate | 1);
-	/*
-	 * balanced_dirty_ratelimit ~= (write_bw / N) <= write_bw
-	 */
-	if (unlikely(balanced_dirty_ratelimit > write_bw))
-		balanced_dirty_ratelimit = write_bw;
 
 	/*
 	 * We could safely do this and return immediately:
@@ -1588,6 +1585,19 @@ static void balance_dirty_pages(struct address_space *mapping,
 		unsigned long m_dirty = 0;	/* stop bogus uninit warnings */
 		unsigned long m_thresh = 0;
 		unsigned long m_bg_thresh = 0;
+#ifdef CONFIG_BLK_DEV_THROTTLING
+		struct blkcg_gq *blkg;
+		unsigned int weight;
+
+		if (unlikely(!mapping->host || !mapping->host->i_sb ||
+			     !mapping->host->i_sb->s_bdev))
+			blkg = NULL;
+		else
+			blkg = task_blkg_get(current,
+					     mapping->host->i_sb->s_bdev);
+
+		task_blkg_inc_writer(blkg);
+#endif
 
 		/*
 		 * Unstable writes are a feature of certain networked
@@ -1663,6 +1673,10 @@ static void balance_dirty_pages(struct address_space *mapping,
 			if (mdtc)
 				m_intv = dirty_poll_interval(m_dirty, m_thresh);
 			current->nr_dirtied_pause = min(intv, m_intv);
+#ifdef CONFIG_BLK_DEV_THROTTLING
+			task_blkg_dec_writer(blkg);
+			task_blkg_put(blkg);
+#endif
 			break;
 		}
 
@@ -1714,6 +1728,14 @@ static void balance_dirty_pages(struct address_space *mapping,
 		dirty_ratelimit = wb->dirty_ratelimit;
 		task_ratelimit = ((u64)dirty_ratelimit * sdtc->pos_ratio) >>
 							RATELIMIT_CALC_SHIFT;
+
+#ifdef CONFIG_BLK_DEV_THROTTLING
+		weight = blkcg_weight(blkg);
+		if (weight != BLKIO_WEIGHT_DEFAULT)
+			task_ratelimit = (u64)task_ratelimit * weight /
+					BLKIO_WEIGHT_DEFAULT;
+#endif
+
 		max_pause = wb_max_pause(wb, sdtc->wb_dirty);
 		min_pause = wb_min_pause(wb, max_pause,
 					 task_ratelimit, dirty_ratelimit,
@@ -1756,6 +1778,10 @@ static void balance_dirty_pages(struct address_space *mapping,
 				current->nr_dirtied = 0;
 			} else if (current->nr_dirtied_pause <= pages_dirtied)
 				current->nr_dirtied_pause += pages_dirtied;
+#ifdef CONFIG_BLK_DEV_THROTTLING
+			task_blkg_dec_writer(blkg);
+			task_blkg_put(blkg);
+#endif
 			break;
 		}
 		if (unlikely(pause > max_pause)) {
@@ -1785,6 +1811,10 @@ pause:
 		current->nr_dirtied = 0;
 		current->nr_dirtied_pause = nr_dirtied_pause;
 
+#ifdef CONFIG_BLK_DEV_THROTTLING
+		task_blkg_dec_writer(blkg);
+		task_blkg_put(blkg);
+#endif
 		/*
 		 * This is typically equal to (dirty < thresh) and can also
 		 * keep "1000+ dd on a slow USB stick" under control.
@@ -2420,6 +2450,21 @@ void account_page_dirtied(struct page *page, struct address_space *mapping)
 	if (mapping_cap_account_dirty(mapping)) {
 		struct bdi_writeback *wb;
 
+#ifdef CONFIG_BLK_DEV_THROTTLING
+		struct blkcg_gq *blkg;
+
+		if (!mapping->host || !mapping->host->i_sb ||
+		    !mapping->host->i_sb->s_bdev)
+			goto skip;
+
+		rcu_read_lock();
+		blkg = task_blkcg_gq(current, mapping->host->i_sb->s_bdev);
+		if (blkg)
+			percpu_counter_add_batch(&blkg->nr_dirtied, 1, WB_STAT_BATCH);
+		rcu_read_unlock();
+skip:
+#endif
+
 		inode_attach_wb(inode, page);
 		wb = inode_to_wb(inode);
 
@@ -2431,6 +2476,13 @@ void account_page_dirtied(struct page *page, struct address_space *mapping)
 		task_io_account_write(PAGE_SIZE);
 		current->nr_dirtied++;
 		this_cpu_inc(bdp_ratelimits);
+
+		/*
+		 * Dirty pages may be written by writeback thread later.
+		 * To get real i/o owner of this page, we shall keep it
+		 * before writeback takes over.
+		 */
+		mtk_btag_pidlog_set_pid(page);
 	}
 }
 EXPORT_SYMBOL(account_page_dirtied);

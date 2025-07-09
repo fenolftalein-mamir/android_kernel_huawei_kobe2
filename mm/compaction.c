@@ -25,6 +25,10 @@
 #include <linux/psi.h>
 #include "internal.h"
 
+#ifdef CONFIG_HUAWEI_UNMOVABLE_ISOLATE
+#include <linux/unmovable_isolate.h>
+#endif
+
 #ifdef CONFIG_COMPACTION
 static inline void count_compact_event(enum vm_event_item item)
 {
@@ -1004,6 +1008,12 @@ static bool suitable_migration_source(struct compact_control *cc,
 static bool suitable_migration_target(struct compact_control *cc,
 							struct page *page)
 {
+#ifdef CONFIG_HUAWEI_UNMOVABLE_ISOLATE
+	int mt = get_pageblock_migratetype(page);
+	if (is_unmovable_isolate2(mt))
+		return false;
+#endif
+
 	/* If the page is a large free page, then disallow migration */
 	if (PageBuddy(page)) {
 		/*
@@ -1019,8 +1029,13 @@ static bool suitable_migration_target(struct compact_control *cc,
 		return true;
 
 	/* If the block is MIGRATE_MOVABLE or MIGRATE_CMA, allow migration */
+#ifdef CONFIG_HUAWEI_UNMOVABLE_ISOLATE
+	if (is_migrate_movable(mt))
+		return true;
+#else
 	if (is_migrate_movable(get_pageblock_migratetype(page)))
 		return true;
+#endif
 
 	/* Otherwise skip the block */
 	return false;
@@ -1254,8 +1269,14 @@ static isolate_migrate_t isolate_migratepages(struct zone *zone,
 		 * Async compaction is optimistic to see if the minimum amount
 		 * of work satisfies the allocation.
 		 */
+#ifdef CONFIG_HUAWEI_UNMOVABLE_ISOLATE
+		if (!suitable_migration_source(cc, page) ||
+		    unmovable_isolate_pageblock(zone, page))
+			continue;
+#else
 		if (!suitable_migration_source(cc, page))
 			continue;
+#endif
 
 		/* Perform the isolation */
 		low_pfn = isolate_migratepages_block(cc, low_pfn,

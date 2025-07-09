@@ -501,6 +501,19 @@ config CMA
 
 	  If unsure, say "n".
 
+config ZONE_MOVABLE_CMA
+	bool "Contiguous Memory Allocator by ZONE_MOVABLE"
+	select CMA
+	depends on HAVE_MEMBLOCK && MMU && MEDIATEK_SOLUTION
+	default y
+	help
+	  This enable the support of ZONE MOVALBE Contiguous Memory Allocator.
+	  Traditional CMA is based on a "fallback logic". The system takes
+	  CMA memory only when it runs out of normal memory and makes the
+	  utilization of CMA low. With ZONE_MOVABLE_CMA, we use a movable zone
+	  to manage CMA memory, all movable pages will be allocated from this
+	  zone first and make utilization of CMA memory high.
+
 config CMA_DEBUG
 	bool "CMA debug messages (DEVELOPMENT)"
 	depends on DEBUG_KERNEL && CMA
@@ -742,6 +755,31 @@ config DEVICE_PUBLIC
 	  memory; i.e., memory that is accessible from both the device and
 	  the CPU
 
+config ARCH_HAS_PTE_SPECIAL
+	bool
+
+config ARCH_SUPPORTS_SPECULATIVE_PAGE_FAULT
+       def_bool n
+
+config SPECULATIVE_PAGE_FAULT
+       bool "Speculative page faults"
+       default n
+       depends on ARCH_SUPPORTS_SPECULATIVE_PAGE_FAULT
+       depends on ARCH_HAS_PTE_SPECIAL && MMU && SMP
+       help
+         Try to handle user space page faults without holding the mmap_sem.
+
+	 This should allow better concurrency for massively threaded process
+	 since the page fault handler will not wait for other threads memory
+	 layout change to be done, assuming that this change is done in another
+	 part of the process's memory space. This type of page fault is named
+	 speculative page fault.
+
+	 If the speculative page fault fails because of a concurrency is
+	 detected or because underlying PMD or PTE tables are not yet
+	 allocating, it is failing its processing and a classic page fault
+	 is then tried.
+
 config FRAME_VECTOR
 	bool
 
@@ -757,3 +795,76 @@ config PERCPU_STATS
 	  This feature collects and exposes statistics via debugfs. The
 	  information includes global and per chunk statistics, which can
 	  be used to help understand percpu memory usage.
+
+config HUAWEI_DIRECT_SWAPPINESS
+	bool "Allow to adjust direct reclaim swappiness"
+	depends on SWAP && PROC_FS
+	default n
+	help
+	  Used to adjust direct reclaim cmpress priority by /proc/sys/vm/direct_swappiness.
+	  only 0 to 60 is valid. If unsure, say N to use it's original value(60).
+
+config HUAWEI_UNMOVABLE_ISOLATE
+       bool "Isolate the unmovable memory."
+       depends on ARM64
+       default n
+         help
+         Isolate the unmovable memory from others migrate types.
+         So that we can improve the success rate of compact.
+
+         If unsure, say "n".
+
+config HUAWEI_UNMOVABLE_ISOLATE1_SIZE_MBYTES
+       int "Size in Mega Bytes For UNMOVABLE_ISOLATE1"
+       depends on HUAWEI_UNMOVABLE_ISOLATE
+       default 64
+       help
+         Defines the size (in MiB) of the default memory area for
+         MIGRATE_UNMOVABLE_ISOLATE1 Memory Allocator. However,
+         we should parse the size from /proc/cmdline firstly.
+
+config HUAWEI_UNMOVABLE_ISOLATE2_SIZE_MBYTES
+       int "Size in Mega Bytes For UNMOVABLE_ISOLATE2"
+       depends on HUAWEI_UNMOVABLE_ISOLATE
+       default 64
+       help
+         Defines the size (in MiB) of the default memory area for
+         MIGRATE_UNMOVABLE_ISOLATE2 Memory Allocator. However,
+         we should parse the size from /proc/cmdline firstly.
+
+config HUAWEI_SLOW_PATH_COUNT
+	bool "page alloc enter slow path count"
+	default n
+	help
+	  Say 'Y' here is you want to count page alloc slow path.
+
+config PROCESS_RECLAIM
+	bool "Enable process reclaim"
+	depends on PROC_FS
+	default n
+	help
+	  It allows to reclaim pages of the process by /proc/pid/reclaim.
+
+	  (echo file > /proc/PID/reclaim) reclaims file-backed pages only.
+	  (echo anon > /proc/PID/reclaim) reclaims anonymous pages only.
+	  (echo all > /proc/PID/reclaim) reclaims all pages.
+
+	  (echo addr size-byte > /proc/PID/reclaim) reclaims pages in
+	  (addr, addr + size-bytes) of the process.
+
+	  Any other vaule is ignored.
+
+config HUAWEI_SWAP_ZDATA
+	bool "Compressed data to swap"
+	depends on SWAP
+	depends on PROCESS_RECLAIM
+	default n
+	help
+	  Save compressed data to swap page.
+
+	  If unsure, say Y to enable swap_zdata.
+
+config HUAWEI_PROMM
+	bool "Enable Fine Reclaim"
+	default n
+

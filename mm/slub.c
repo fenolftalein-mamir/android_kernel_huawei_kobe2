@@ -37,7 +37,9 @@
 #include <linux/random.h>
 
 #include <trace/events/kmem.h>
-
+#ifdef CONFIG_HUAWEI_PROC_CHECK_ROOT
+#include <chipset_common/security/saudit.h>
+#endif
 #include "internal.h"
 
 /*
@@ -198,7 +200,7 @@ static inline bool kmem_cache_has_cpu_partial(struct kmem_cache *s)
 /*
  * Tracking user of a slab.
  */
-#define TRACK_ADDRS_COUNT 16
+#define TRACK_ADDRS_COUNT 8
 struct track {
 	unsigned long addr;	/* Called from address */
 #ifdef CONFIG_STACKTRACE
@@ -698,7 +700,7 @@ static void print_trailer(struct kmem_cache *s, struct page *page, u8 *p)
 		print_section(KERN_ERR, "Padding ", p + off,
 			      size_from_object(s) - off);
 
-	dump_stack();
+	BUG();
 }
 
 void object_err(struct kmem_cache *s, struct page *page,
@@ -719,7 +721,7 @@ static __printf(3, 4) void slab_err(struct kmem_cache *s, struct page *page,
 	va_end(args);
 	slab_bug(s, "%s", buf);
 	print_page_info(page);
-	dump_stack();
+	BUG();
 }
 
 static void init_object(struct kmem_cache *s, void *object, u8 val)
@@ -762,6 +764,7 @@ static int check_bytes_and_report(struct kmem_cache *s, struct page *page,
 	while (end > fault && end[-1] == value)
 		end--;
 
+	pr_err("%s start:0x%p, bytes:%ud, fault:0x%p, end:0x%p\n", __func__, start, bytes, fault, end - 1);
 	slab_bug(s, "%s overwritten", what);
 	pr_err("INFO: 0x%p-0x%p. First byte 0x%x instead of 0x%x\n",
 					fault, end - 1, fault[0], value);
@@ -857,6 +860,8 @@ static int slab_pad_check(struct kmem_cache *s, struct page *page)
 	while (end > fault && end[-1] == POISON_INUSE)
 		end--;
 
+	pr_err("%s start:0x%p, length:%d, remainder:%d, memchr_inv_end - remainder:0x%p, fault:0x%p,end:0x%p\n",
+	__func__, start, length, remainder, start + length - remainder, fault, end - 1);
 	slab_err(s, page, "Padding overwritten. 0x%p-0x%p", fault, end - 1);
 	print_section(KERN_ERR, "Padding ", end - remainder, remainder);
 
@@ -3518,7 +3523,7 @@ static int calculate_sizes(struct kmem_cache *s, int forced_order)
 
 	kasan_cache_create(s, &size, &s->flags);
 #ifdef CONFIG_SLUB_DEBUG
-	if (flags & SLAB_RED_ZONE) {
+	if (flags & SLAB_RED_ZONE && 0) {
 		/*
 		 * Add some empty padding so that we can catch
 		 * overwrites from earlier objects rather than let
@@ -3828,16 +3833,21 @@ const char *__check_heap_object(const void *ptr, unsigned long n,
 	object_size = slab_ksize(s);
 
 	/* Reject impossible pointers. */
-	if (ptr < page_address(page))
-		return s->name;
+	if (ptr < page_address(page)) {
+		pr_err("ptr %pK is impoosible address\n", ptr);
+		goto err;
+	}
 
 	/* Find offset within object. */
 	offset = (ptr - page_address(page)) % s->size;
 
 	/* Adjust for redzone and reject if within the redzone. */
 	if (kmem_cache_debug(s) && s->flags & SLAB_RED_ZONE) {
-		if (offset < s->red_left_pad)
-			return s->name;
+		if (offset < s->red_left_pad) {
+			pr_err("offset %lu/red_left_pad %d is wrong\n",
+				offset, s->red_left_pad);
+			goto err;
+		}
 		offset -= s->red_left_pad;
 	}
 
@@ -3845,7 +3855,20 @@ const char *__check_heap_object(const void *ptr, unsigned long n,
 	if (offset <= object_size && n <= object_size - offset)
 		return NULL;
 
-	return s->name;
+	pr_err("Usercopy: kernel memory r/w attempt detected from/to %pK %s %lu bytes\n",
+		ptr, s->name, n);
+
+err:
+	pr_err("ptr = %pK, page = %pK, n = %lu\n", ptr, page, n);
+	pr_err("page_addr = %pK, kmem_cache = %pK, size = %d, object= %lu, red_left_pad = %d\n",
+		page_address(page), s, s->size, object_size, s->red_left_pad);
+
+#ifdef CONFIG_HUAWEI_PROC_CHECK_ROOT
+	saudit_log(USERCOPY, STP_RISK, 0,
+		"msg=kernel memory r/w attempt detected from/to %pK %s %lu bytes",
+		ptr, s->name, n);
+#endif
+	BUG();
 }
 #endif /* CONFIG_HARDENED_USERCOPY */
 
@@ -5868,4 +5891,5 @@ ssize_t slabinfo_write(struct file *file, const char __user *buffer,
 {
 	return -EIO;
 }
+
 #endif /* CONFIG_SLABINFO */
