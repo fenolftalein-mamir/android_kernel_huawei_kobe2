@@ -115,7 +115,7 @@ ifeq ($(CFG_BUILD_CONNAC2), true)
     $(FM_CHIP)-objs += chips/$(FM_CHIP_PATH)_2_fm_lib.o
     $(FM_CHIP)-objs += plat/conn_infra.o
 else
-    WMT_SRC_FOLDER := $(TOP)/vendor/mediatek/kernel_modules/connectivity/common
+    WMT_SRC_FOLDER := $(srctree)/drivers/misc/mediatek/connectivity/wmt_drv
     WMT_INCLUDE_PATH := common_main
 
     ccflags-y += -I$(WMT_SRC_FOLDER)/$(WMT_INCLUDE_PATH)/include \

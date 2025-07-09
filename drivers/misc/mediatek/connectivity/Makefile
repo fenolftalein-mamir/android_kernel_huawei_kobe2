@@ -43,10 +43,10 @@ export MTK_ANDROID_WMT=y
 subdir-ccflags-y += -D MTK_WCN_REMOVE_KERNEL_MODULE
 subdir-ccflags-y += -D MTK_WCN_BUILT_IN_DRIVER
 #subdir-ccflags-y += -Who-error
-obj-y += wmt_drv/
-obj-y += wmt_chrdev_wifi/
-obj-y += wlan_drv_gen4m/
-obj-y += bt/
-obj-y += fm/
-obj-y += gps/
+obj-$(CONFIG_MTK_COMBO) += wmt_drv/
+obj-$(CONFIG_MTK_COMBO) += wmt_chrdev_wifi/
+obj-$(CONFIG_MTK_COMBO_CHIP_CONSYS_6765) += wlan_drv_gen4m/
+obj-$(CONFIG_MTK_BTIF) += bt/
+obj-$(CONFIG_MTK_FMRADIO) += fm/
+obj-$(CONFIG_MTK_COMBO_GPS) += gps/
 endif
