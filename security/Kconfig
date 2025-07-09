@@ -232,8 +232,12 @@ source security/tomoyo/Kconfig
 source security/apparmor/Kconfig
 source security/loadpin/Kconfig
 source security/yama/Kconfig
+source security/kernel_stp/Kconfig
+source security/hw_root_scan/Kconfig
+source security/check_root/Kconfig
 
 source security/integrity/Kconfig
+source security/hie/Kconfig
 
 choice
 	prompt "Default security module"
@@ -273,6 +277,8 @@ config DEFAULT_SECURITY
 	default "" if DEFAULT_SECURITY_DAC
 
 source "security/Kconfig.hardening"
+source security/kernel_harden/Kconfig
+source security/kernel_harden_test/Kconfig
 
 endmenu
 
