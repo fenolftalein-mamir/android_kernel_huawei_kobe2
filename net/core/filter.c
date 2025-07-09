@@ -3063,6 +3063,58 @@ static const struct bpf_func_proto bpf_get_socket_uid_proto = {
 	.arg1_type      = ARG_PTR_TO_CTX,
 };
 
+BPF_CALL_1(bpf_get_socket_pid, struct sk_buff *, skb)
+{
+#if defined(CONFIG_HUAWEI_KSTATE)
+	struct sock *sk = sk_to_full_sk(skb->sk);
+	if (!sk || !sk_fullsock(sk))
+		return 0;
+
+	struct socket *socket = sk->sk_socket;
+	if (!socket)
+		return 0;
+
+	return socket->pid;
+#endif
+	return 0;
+}
+
+static const struct bpf_func_proto bpf_get_socket_pid_proto = {
+	.func           = bpf_get_socket_pid,
+	.gpl_only       = false,
+	.ret_type       = RET_INTEGER,
+	.arg1_type      = ARG_PTR_TO_CTX,
+};
+
+
+BPF_CALL_3(bpf_get_socket_process, struct sk_buff *, skb,
+	   void *, comm, u32, size)
+{
+	struct sock *sk = NULL;
+
+	if (!comm || size < TASK_COMM_LEN)
+		return -EINVAL;
+
+	sk = sk_to_full_sk(skb->sk);
+	if (!sk || !sk_fullsock(sk))
+		return -EINVAL;
+
+#if defined(CONFIG_CGROUP_BPF)
+	strncpy(comm, sk->sk_process_name, TASK_COMM_LEN);
+#endif
+
+	return 0;
+}
+
+static const struct bpf_func_proto bpf_get_socket_process_proto = {
+	.func           = bpf_get_socket_process,
+	.gpl_only       = false,
+	.ret_type       = RET_INTEGER,
+	.arg1_type      = ARG_PTR_TO_CTX,
+	.arg2_type      = ARG_PTR_TO_UNINIT_MEM,
+	.arg3_type      = ARG_ANYTHING,
+};
+
 BPF_CALL_5(bpf_setsockopt, struct bpf_sock_ops_kern *, bpf_sock,
 	   int, level, int, optname, char *, optval, int, optlen)
 {
@@ -3192,6 +3244,8 @@ bpf_base_func_proto(enum bpf_func_id func_id)
 	case BPF_FUNC_trace_printk:
 		if (capable(CAP_SYS_ADMIN))
 			return bpf_get_trace_printk_proto();
+	case BPF_FUNC_get_socket_pid:
+		return &bpf_get_socket_pid_proto;
 	default:
 		return NULL;
 	}
@@ -3221,6 +3275,8 @@ sk_filter_func_proto(enum bpf_func_id func_id)
 		return &bpf_get_socket_cookie_proto;
 	case BPF_FUNC_get_socket_uid:
 		return &bpf_get_socket_uid_proto;
+	case BPF_FUNC_get_socket_process:
+		return &bpf_get_socket_process_proto;
 	default:
 		return bpf_base_func_proto(func_id);
 	}

@@ -68,6 +68,10 @@
 
 #include "ip6_offload.h"
 
+#ifdef CONFIG_HW_DPIMARK_MODULE
+#include <hwnet/hw_dpi_mark/dpi_hw_hook.h>
+#endif
+
 MODULE_AUTHOR("Cast of dozens");
 MODULE_DESCRIPTION("IPv6 protocol stack for Linux");
 MODULE_LICENSE("GPL");
@@ -266,6 +270,14 @@ lookup_protocol:
 		}
 	}
 out:
+#ifdef CONFIG_CGROUP_BPF
+	if (!err)
+		get_task_comm(sk->sk_process_name, current->group_leader);
+#endif
+#ifdef CONFIG_HW_DPIMARK_MODULE
+	if (!err)
+		mplk_try_nw_bind(sk);
+#endif
 	return err;
 out_rcu_unlock:
 	rcu_read_unlock();

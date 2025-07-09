@@ -115,6 +115,9 @@
 #include "udp_impl.h"
 #include <net/sock_reuseport.h>
 #include <net/addrconf.h>
+#ifdef CONFIG_HW_NETWORK_AWARE
+#include <network_aware/network_aware.h>
+#endif
 
 struct udp_table udp_table __read_mostly;
 EXPORT_SYMBOL(udp_table);
@@ -896,6 +899,9 @@ int udp_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 
 	if (msg->msg_flags & MSG_OOB) /* Mirror BSD error message compatibility */
 		return -EOPNOTSUPP;
+#ifdef CONFIG_HW_NETWORK_AWARE
+	tcp_network_aware(false);
+#endif
 
 	ipc.opt = NULL;
 	ipc.tx_flags = 0;
@@ -1597,7 +1603,9 @@ try_again:
 	skb = __skb_recv_udp(sk, flags, noblock, &peeked, &off, &err);
 	if (!skb)
 		return err;
-
+#ifdef CONFIG_HW_NETWORK_AWARE
+	tcp_network_aware(true);
+#endif
 	ulen = udp_skb_len(skb);
 	copied = len;
 	if (copied > ulen - off)

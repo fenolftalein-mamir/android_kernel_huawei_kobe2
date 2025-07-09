@@ -109,6 +109,10 @@
 #include <net/busy_poll.h>
 #include <linux/errqueue.h>
 
+#ifdef CONFIG_HW_FDLEAK
+#include <chipset_common/hwfdleak/fdleak.h>
+#endif
+
 #ifdef CONFIG_NET_RX_BUSY_POLL
 unsigned int sysctl_net_busy_read __read_mostly;
 unsigned int sysctl_net_busy_poll __read_mostly;
@@ -425,6 +429,9 @@ struct file *sock_alloc_file(struct socket *sock, int flags, const char *dname)
 	sock->file = file;
 	file->f_flags = O_RDWR | (flags & O_NONBLOCK);
 	file->private_data = sock;
+#ifdef CONFIG_HW_FDLEAK
+	fdleak_report(FDLEAK_WP_SOCKET, 0);
+#endif
 	return file;
 }
 EXPORT_SYMBOL(sock_alloc_file);
@@ -578,6 +585,11 @@ struct socket *sock_alloc(void)
 	inode->i_gid = current_fsgid();
 	inode->i_op = &sockfs_inode_ops;
 
+#ifdef CONFIG_HUAWEI_KSTATE
+	if (sock && current)
+		sock->pid = current->tgid;
+#endif
+
 	this_cpu_add(sockets_in_use, 1);
 	return sock;
 }
@@ -616,6 +628,9 @@ static void __sock_release(struct socket *sock, struct inode *inode)
 		return;
 	}
 	sock->file = NULL;
+#ifdef CONFIG_HW_FDLEAK
+	fdleak_report(FDLEAK_WP_SOCKET, 1);
+#endif
 }
 
 void sock_release(struct socket *sock)

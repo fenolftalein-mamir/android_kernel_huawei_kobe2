@@ -85,6 +85,9 @@
 #include <crypto/hash.h>
 #include <linux/scatterlist.h>
 
+#ifdef CONFIG_HW_WIFIPRO
+#include <hwnet/ipv4/wifipro_tcp_monitor.h>
+#endif
 #ifdef CONFIG_TCP_MD5SIG
 static int tcp_v4_md5_hash_hdr(char *md5_hash, const struct tcp_md5sig_key *key,
 			       __be32 daddr, __be32 saddr, const struct tcphdr *th);
@@ -1737,6 +1740,9 @@ process:
 	bh_lock_sock_nested(sk);
 	tcp_segs_in(tcp_sk(sk), skb);
 	ret = 0;
+#ifdef CONFIG_HW_WIFIPRO
+	wifipro_update_tcp_statistics(WIFIPRO_TCP_MIB_INSEGS, skb, sk);
+#endif
 	if (!sock_owned_by_user(sk)) {
 		ret = tcp_v4_do_rcv(sk, skb);
 	} else if (tcp_add_backlog(sk, skb)) {

@@ -16,6 +16,11 @@ config WEXT_SPY
 config WEXT_PRIV
 	bool
 
+config HUAWEI_WIFI
+	tristate "wifi chip driver"
+	help
+	  use huawei feature
+
 config CFG80211
 	tristate "cfg80211 - wireless configuration API"
 	depends on RFKILL || !RFKILL

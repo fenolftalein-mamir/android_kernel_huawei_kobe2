@@ -677,7 +677,7 @@ config TCP_CONG_BBR
 
 choice
 	prompt "Default TCP congestion control"
-	default DEFAULT_CUBIC
+	default DEFAULT_BIC
 	help
 	  Select the TCP congestion control that will be used by default
 	  for all connections.
@@ -748,3 +748,11 @@ config TCP_MD5SIG
 	  on the Internet.
 
 	  If unsure, say N.
+
+config HW_SYN_LINEAR_RETRY
+	bool "Huawei tcp syn sent linear retry support"
+	default n
+
+config TCP_AUTOTUNING
+	bool "tcp autotuning congestion avoid"
+	default n

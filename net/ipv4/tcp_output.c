@@ -41,7 +41,17 @@
 #include <linux/compiler.h>
 #include <linux/gfp.h>
 #include <linux/module.h>
+#ifdef CONFIG_HW_WIFIPRO
+#include <hwnet/ipv4/wifipro_tcp_monitor.h>
+#endif
 
+#ifdef CONFIG_HW_NETQOS_SCHED
+#include <netqos_sched/netqos_sched.h>
+#include <trace/events/netqos.h>
+#endif
+#ifdef CONFIG_HUAWEI_FEATURE_PRINT_PID_NAME
+#include <huawei_platform/power/pid_socket.h>
+#endif
 /* People can turn this off for buggy TCP's found in printers etc. */
 int sysctl_tcp_retrans_collapse __read_mostly = 1;
 
@@ -288,6 +298,10 @@ static u16 tcp_select_window(struct sock *sk)
 	}
 	tp->rcv_wnd = new_win;
 	tp->rcv_wup = tp->rcv_nxt;
+
+#ifdef CONFIG_HW_NETQOS_SCHED
+	netqos_rcvwnd(sk, &new_win);
+#endif
 
 	/* Make sure we do not exceed the maximum possible
 	 * scaled window.
@@ -1023,11 +1037,16 @@ static int __tcp_transmit_skb(struct sock *sk, struct sk_buff *skb,
 	tcb = TCP_SKB_CB(skb);
 	memset(&opts, 0, sizeof(opts));
 
-	if (unlikely(tcb->tcp_flags & TCPHDR_SYN))
+	if (unlikely(tcb->tcp_flags & TCPHDR_SYN)) {
+#ifdef CONFIG_HUAWEI_FEATURE_PRINT_PID_NAME
+		PrintProcessPidName(inet);
+#endif
 		tcp_options_size = tcp_syn_options(sk, skb, &opts, &md5);
-	else
+	}
+	else {
 		tcp_options_size = tcp_established_options(sk, skb, &opts,
 							   &md5);
+	}
 	tcp_header_size = tcp_options_size + sizeof(struct tcphdr);
 
 	/* if no packet is in qdisc/device queue, then allow XPS to select
@@ -2213,9 +2232,12 @@ static bool tcp_small_queue_check(struct sock *sk, const struct sk_buff *skb,
 {
 	unsigned int limit;
 
-	limit = max(2 * skb->truesize, sk->sk_pacing_rate >> 10);
-	limit = min_t(u32, limit, sysctl_tcp_limit_output_bytes);
-	limit <<= factor;
+	/* rollback to kernel 3.18 */
+	//limit = max(2 * skb->truesize, sk->sk_pacing_rate >> 10);
+	//limit = min_t(u32, limit, sysctl_tcp_limit_output_bytes);
+	//limit <<= factor;
+	limit = max_t(u32, sysctl_tcp_limit_output_bytes,
+		      sk->sk_pacing_rate >> 10);
 
 	if (refcount_read(&sk->sk_wmem_alloc) > limit) {
 		/* Always send the 1st or 2nd skb in write queue.
@@ -3488,8 +3510,14 @@ int tcp_connect(struct sock *sk)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct sk_buff *buff;
 	int err;
-
+#ifdef CONFIG_HW_WIFIPRO
+	int wifipro_dev_max_len = 0;
+#endif
 	tcp_call_bpf(sk, BPF_SOCK_OPS_TCP_CONNECT_CB);
+
+#ifdef CONFIG_HW_NETQOS_SCHED
+	trace_netqos_trx(sk, 0, false, jiffies);
+#endif
 
 	if (inet_csk(sk)->icsk_af_ops->rebuild_header(sk))
 		return -EHOSTUNREACH; /* Routing failure or similar. */
@@ -3522,6 +3550,14 @@ int tcp_connect(struct sock *sk)
 	 */
 	tp->snd_nxt = tp->write_seq;
 	tp->pushed_seq = tp->write_seq;
+#ifdef CONFIG_HW_WIFIPRO
+	if (buff->dev) {
+	    wifipro_dev_max_len = strnlen(buff->dev->name, IFNAMSIZ - 1);
+	    strncpy(buff->sk->wifipro_dev_name, buff->dev->name, wifipro_dev_max_len);
+	    buff->sk->wifipro_dev_name[wifipro_dev_max_len] = '\0';
+	    WIFIPRO_DEBUG("wifipro_dev_name is %s", buff->dev->name);
+	}
+#endif
 	buff = tcp_send_head(sk);
 	if (unlikely(buff)) {
 		tp->snd_nxt	= TCP_SKB_CB(buff)->seq;

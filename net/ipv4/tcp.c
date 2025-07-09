@@ -281,6 +281,15 @@
 #include <linux/uaccess.h>
 #include <asm/ioctls.h>
 #include <net/busy_poll.h>
+#ifdef CONFIG_HW_WIFIPRO
+#include <hwnet/ipv4/wifipro_tcp_monitor.h>
+#endif
+#ifdef CONFIG_HW_NETWORK_AWARE
+#include <network_aware/network_aware.h>
+#endif
+#ifdef CONFIG_HW_NETQOS_SCHED
+#include <netqos_sched/netqos_sched.h>
+#endif
 
 int sysctl_tcp_min_tso_segs __read_mostly = 2;
 
@@ -436,6 +445,13 @@ void tcp_init_sock(struct sock *sk)
 	tp->snd_ssthresh = TCP_INFINITE_SSTHRESH;
 	tp->snd_cwnd_clamp = ~0;
 	tp->mss_cache = TCP_MSS_DEFAULT;
+
+#ifdef CONFIG_HW_NETQOS_SCHED
+	tp->rcv_rate.min_rtt = ~0U;
+	tp->rcv_rate.rcv_wnd = ~0U;
+	sk->sk_netqos_level = get_net_qos_level(current);
+	sk->sk_netqos_time = jiffies;
+#endif
 
 	tp->reordering = sock_net(sk)->ipv4.sysctl_tcp_reordering;
 	tcp_assign_congestion_control(sk);
@@ -1174,6 +1190,13 @@ int tcp_sendmsg_locked(struct sock *sk, struct msghdr *msg, size_t size)
 	bool process_backlog = false;
 	bool sg;
 	long timeo;
+#ifdef CONFIG_HW_NETWORK_AWARE
+	tcp_network_aware(false);
+	stat_bg_network_flow(false, size);
+#endif
+#ifdef CONFIG_HW_NETQOS_SCHED
+	netqos_sendrcv(sk, size, false);
+#endif
 
 	flags = msg->msg_flags;
 
@@ -1775,6 +1798,9 @@ int tcp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int nonblock,
 
 	if (unlikely(flags & MSG_ERRQUEUE))
 		return inet_recv_error(sk, msg, len, addr_len);
+#ifdef CONFIG_HW_NETWORK_AWARE
+	tcp_network_aware(true);
+#endif
 
 	if (sk_can_busy_loop(sk) && skb_queue_empty(&sk->sk_receive_queue) &&
 	    (sk->sk_state == TCP_ESTABLISHED))
@@ -1996,7 +2022,12 @@ skip_copy:
 
 	/* Clean up data we have read: This will do ACK frames. */
 	tcp_cleanup_rbuf(sk, copied);
-
+#ifdef CONFIG_HW_NETWORK_AWARE
+	stat_bg_network_flow(true, copied);
+#endif
+#ifdef CONFIG_HW_NETQOS_SCHED
+	netqos_sendrcv(sk, copied, true);
+#endif
 	release_sock(sk);
 	return copied;
 
@@ -2017,6 +2048,16 @@ EXPORT_SYMBOL(tcp_recvmsg);
 void tcp_set_state(struct sock *sk, int state)
 {
 	int oldstate = sk->sk_state;
+#ifdef CONFIG_HW_WIFIPRO
+	struct inet_sock *inet_temp = inet_sk(sk);
+	unsigned int dest_addr = 0;
+	unsigned int dest_port = 0;
+
+	if (inet_temp != NULL) {
+		dest_addr = htonl(inet_temp->inet_daddr);
+		dest_port = htons(inet_temp->inet_dport);
+	}
+#endif
 
 	switch (state) {
 	case TCP_ESTABLISHED:
@@ -2042,6 +2083,16 @@ void tcp_set_state(struct sock *sk, int state)
 	 * socket sitting in hash tables.
 	 */
 	sk_state_store(sk, state);
+#ifdef CONFIG_HW_WIFIPRO
+	if (state == TCP_SYN_SENT) {
+		if (is_wifipro_on && is_mcc_china && wifipro_is_not_local_or_lan_sock(dest_addr)) {
+			if (wifipro_is_google_sock(current, dest_addr)) {
+				sk->wifipro_is_google_sock = 1;
+				WIFIPRO_DEBUG("add a google sock:%s", wifipro_ntoa(dest_addr));
+			}
+		}
+	}
+#endif
 
 #ifdef STATE_TRACE
 	SOCK_DEBUG(sk, "TCP sk=%p, State %s -> %s\n", sk, statename[oldstate], statename[state]);

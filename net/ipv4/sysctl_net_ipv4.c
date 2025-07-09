@@ -26,6 +26,7 @@
 #include <net/inet_frag.h>
 #include <net/ping.h>
 #include <net/protocol.h>
+#include <net/ip6_route.h>
 
 static int zero;
 static int one = 1;
@@ -743,6 +744,17 @@ static struct ctl_table ipv4_table[] = {
 		.mode		= 0444,
 		.proc_handler   = proc_tcp_available_ulp,
 	},
+#ifdef CONFIG_TCP_AUTOTUNING
+	{
+		.procname		= "tcp_autotuning",
+		.data			= &sysctl_tcp_autotuning,
+		.maxlen			= sizeof(int),
+		.mode			= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1			= &zero,
+		.extra2			= &one,
+	},
+#endif
 	{
 		.procname       = "tcp_default_init_rwnd",
 		.data           = &sysctl_tcp_default_init_rwnd,
@@ -789,6 +801,41 @@ static struct ctl_table ipv4_table[] = {
 		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &one
 	},
+#ifdef CONFIG_HW_NETQOS_SCHED
+	{
+		.procname	= "netqos_switch",
+		.data		= &sysctl_netqos_switch,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+	},
+	{
+		.procname	= "netqos_debug",
+		.data		= &sysctl_netqos_debug,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+	},
+	{
+		.procname	= "netqos_limit",
+		.data		= &sysctl_netqos_limit,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+	},
+
+	{
+		.procname	= "netqos_period",
+		.data		= &sysctl_netqos_period,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec,
+	},
+#endif
+
 	{ }
 };
 
@@ -1193,6 +1240,17 @@ static struct ctl_table ipv4_net_table[] = {
 	{ }
 };
 
+static struct ctl_table net_table[] = {
+	{
+		.procname = "optr",
+		.data = &sysctl_optr,
+		.maxlen = sizeof(int),
+		.mode = 0664,
+		.proc_handler = proc_dointvec,
+	},
+	{ }
+};
+
 static __net_init int ipv4_sysctl_init_net(struct net *net)
 {
 	struct ctl_table *table;
@@ -1251,6 +1309,10 @@ static __init int sysctl_ipv4_init(void)
 	hdr = register_net_sysctl(&init_net, "net/ipv4", ipv4_table);
 	if (!hdr)
 		return -ENOMEM;
+
+	hdr = register_net_sysctl(&init_net, "net", net_table);
+	if (!hdr)
+		pr_info("[mtk_net] register net sysctl optr is fail.\n");
 
 	if (register_pernet_subsys(&ipv4_sysctl_ops)) {
 		unregister_net_sysctl_table(hdr);
