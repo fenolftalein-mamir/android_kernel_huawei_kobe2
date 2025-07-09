@@ -128,8 +128,10 @@ obj-$(CONFIG_BCH) += bch.o
 obj-$(CONFIG_LZO_COMPRESS) += lzo/
 obj-$(CONFIG_LZO_DECOMPRESS) += lzo/
 obj-$(CONFIG_LZ4_COMPRESS) += lz4/
+obj-$(CONFIG_LZ4M_COMPRESS) += lz4m/
 obj-$(CONFIG_LZ4HC_COMPRESS) += lz4/
 obj-$(CONFIG_LZ4_DECOMPRESS) += lz4/
+obj-$(CONFIG_LZ4M_DECOMPRESS) += lz4m/
 obj-$(CONFIG_ZSTD_COMPRESS) += zstd/
 obj-$(CONFIG_ZSTD_DECOMPRESS) += zstd/
 obj-$(CONFIG_XZ_DEC) += xz/
@@ -260,3 +262,21 @@ UBSAN_SANITIZE_ubsan.o := n
 obj-$(CONFIG_SBITMAP) += sbitmap.o
 
 obj-$(CONFIG_PARMAN) += parman.o
+
+obj-$(CONFIG_CC_SECUREC) += libc_sec/src/vsprintf_s.o \
+			    libc_sec/src/snprintf_s.o \
+			    libc_sec/src/memmove_s.o \
+			    libc_sec/src/strcat_s.o \
+			    libc_sec/src/strncpy_s.o \
+			    libc_sec/src/sprintf_s.o \
+			    libc_sec/src/memset_s.o \
+			    libc_sec/src/securecutil.o \
+			    libc_sec/src/strtok_s.o \
+			    libc_sec/src/memcpy_s.o \
+			    libc_sec/src/strncat_s.o \
+			    libc_sec/src/vsnprintf_s.o \
+			    libc_sec/src/strcpy_s.o \
+			    libc_sec/src/secureprintoutput_a.o \
+			    libc_sec/src/sscanf_s.o \
+			    libc_sec/src/vsscanf_s.o \
+			    libc_sec/src/secureinput_a.o
