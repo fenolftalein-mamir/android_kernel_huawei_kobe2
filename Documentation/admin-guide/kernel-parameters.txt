@@ -1971,7 +1971,7 @@
 
 			Default is 'flush'.
 
-			For details see: Documentation/admin-guide/hw-vuln/l1tf.rst
+			For details see: Documentation/admin-guide/l1tf.rst
 
 	l2cr=		[PPC]
 
@@ -2213,32 +2213,6 @@
 	mdacon=		[MDA]
 			Format: <first>,<last>
 			Specifies range of consoles to be captured by the MDA.
-
-	mds=		[X86,INTEL]
-			Control mitigation for the Micro-architectural Data
-			Sampling (MDS) vulnerability.
-
-			Certain CPUs are vulnerable to an exploit against CPU
-			internal buffers which can forward information to a
-			disclosure gadget under certain conditions.
-
-			In vulnerable processors, the speculatively
-			forwarded data can be used in a cache side channel
-			attack, to access data to which the attacker does
-			not have direct access.
-
-			This parameter controls the MDS mitigation. The
-			options are:
-
-			full       - Enable MDS mitigation on vulnerable CPUs
-			full,nosmt - Enable MDS mitigation and disable
-				     SMT on vulnerable CPUs
-			off        - Unconditionally disable MDS mitigation
-
-			Not specifying this option is equivalent to
-			mds=full.
-
-			For details see: Documentation/admin-guide/hw-vuln/mds.rst
 
 	mem=nn[KMG]	[KNL,BOOT] Force usage of a specific amount of memory
 			Amount of memory to be used when the kernel is not able
@@ -4531,6 +4505,24 @@
 
 	unknown_nmi_panic
 			[X86] Cause panic on unknown NMI.
+
+	unmovable_isolate1=size[KMG]
+			[KNL] The size of MIGRATE_UNMOVABLE_ISOLATE1 area.
+			All ddr-size device will set the same "size".
+
+	unmovable_isolate1=ddr_size1:size1[KMG][,ddr_size2:size2[KMG],...]
+			[KNL] Same as above, but depends on the memory
+			in the running system. The cmdline must adhere the syntax:
+			the "ddrsize" and "size" is separated by colons.
+
+	unmovable_isolate2=size[KMG]
+			[KNL] The size of MIGRATE_UNMOVABLE_ISOLATE2 area.
+			All ddr-size device will set the same "size".
+
+	unmovable_isolate2=ddr_size1:size1[KMG][,ddr_size2:size2[KMG],...]
+			[KNL] Same as above, but depends on the memory
+			in the running system. The cmdline must adhere the syntax:
+			the "ddrsize" and "size" is separated by colons.
 
 	usbcore.authorized_default=
 			[USB] Default USB device authorization:
