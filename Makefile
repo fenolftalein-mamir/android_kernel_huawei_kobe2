@@ -412,8 +412,12 @@ LINUXINCLUDE    := \
 		-I$(srctree)/arch/$(hdr-arch)/include \
 		-I$(objtree)/arch/$(hdr-arch)/include/generated \
 		$(if $(KBUILD_SRC), -I$(srctree)/include) \
+		-I$(srctree)/drivers/misc/mediatek/include \
 		-I$(objtree)/include \
 		$(USERINCLUDE)
+
+LINUXINCLUDE += \
+		-I$(srctree)/lib/libc_sec/include
 
 KBUILD_AFLAGS   := -D__ASSEMBLY__
 KBUILD_CFLAGS   := -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs \
@@ -710,6 +714,15 @@ endif
 
 ifneq ($(CONFIG_FRAME_WARN),0)
 KBUILD_CFLAGS += $(call cc-option,-Wframe-larger-than=${CONFIG_FRAME_WARN})
+endif
+
+#KBUILD_CFLAGS += -fplugin=$(MYDROID)/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-gnu-6.3.1/libexec/gcc/aarch64-linux-gnu/6.3.1/cfi.so -fplugin-arg-cfi-abortfn=__cfi_report
+ifdef CONFIG_HUAWEI_CFI
+KBUILD_CFLAGS += -fplugin=$(MYDROID)/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-gnu-6.3.1/libexec/gcc/aarch64-linux-gnu/6.3.1/cfi.so -fplugin-arg-cfi-abortfn=__cfi_report
+KBUILD_CFLAGS += -fplugin-arg-cfi-tagvalue=$(CONFIG_HUAWEI_CFI_TAG)
+ifeq ($(CONFIG_HUAWEI_CFI_DEBUG),y)
+KBUILD_CFLAGS += -DHW_SAVE_CFI_LOG
+endif
 endif
 
 # This selects the stack protector compiler flag. Testing it is delayed
@@ -1014,8 +1027,11 @@ INITRD_COMPRESS-$(CONFIG_RD_LZ4)   := lz4
 
 ifdef CONFIG_MODULE_SIG_ALL
 $(eval $(call config_filename,MODULE_SIG_KEY))
-
+ifneq ($(CONFIG_MODULE_SIG_KEY),"huawei_signing_key.pem")
 mod_sign_cmd = scripts/sign-file $(CONFIG_MODULE_SIG_HASH) $(MODULE_SIG_KEY_SRCPREFIX)$(CONFIG_MODULE_SIG_KEY) certs/signing_key.x509
+else
+mod_sign_cmd = $(CONFIG_SHELL) $(srctree)/../vendor/huawei/chipset_common/build/signkernel/sign-kernel.sh
+endif
 else
 mod_sign_cmd = true
 endif
