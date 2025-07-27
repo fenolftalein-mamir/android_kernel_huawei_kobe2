@@ -25,14 +25,12 @@ PROJ_DT_NAMES := $(subst $\",,$(CONFIG_BUILD_ARM_DTB_OVERLAY_IMAGE_NAMES))
 endif
 
 MAIN_DTB_NAMES := $(addsuffix .dtb,$(MAIN_DT_NAMES))
-PROJ_DTB_NAMES := $(addsuffix .dtb,$(PROJ_DT_NAMES))
+PROJ_DTBO_NAMES := $(addsuffix .dtbo,$(PROJ_DT_NAMES))
 MAIN_DTB_FILES := $(addprefix $(objtree)/arch/$(SRCARCH)/boot/dts/, $(MAIN_DTB_NAMES))
-PROJ_DTB_FILES := $(addprefix $(objtree)/arch/$(SRCARCH)/boot/dts/, $(PROJ_DTB_NAMES))
+PROJ_DTBO_FILES := $(addprefix $(objtree)/arch/$(SRCARCH)/boot/dts/, $(PROJ_DTBO_NAMES))
 PROJ_DTS_FILES := $(addsuffix .dts,$(addprefix $(srctree)/arch/$(SRCARCH)/boot/dts/, $(PROJ_DT_NAMES)))
-ABS_DTB_FILES := $(abspath $(addsuffix .dtb,$(addprefix $(objtree)/arch/$(SRCARCH)/boot/dts/,$(PROJ_DT_NAMES))))
-ABS_DTB2_FILES := $(abspath $(addprefix $(objtree)/arch/$(SRCARCH)/boot/,mtk.dtb))
 
-export PROJ_DTB_FILES
+export PROJ_DTBO_FILES
 export PROJ_DTS_FILES
 
 ifndef DRVGEN_OUT
@@ -45,7 +43,7 @@ ALL_DRVGEN_FILE := $(MTK_PROJECT)/cust.dtsi
 DWS_FILE := $(srctree)/$(DRVGEN_PATH)/$(MTK_PROJECT).dws
 ifneq ($(wildcard $(DWS_FILE)),)
 DRVGEN_FILE_LIST := $(addprefix $(DRVGEN_OUT)/,$(ALL_DRVGEN_FILE))
-DRVGEN_FILE_LIST += $(PROJ_DTB_FILES)
+DRVGEN_FILE_LIST += $(PROJ_DTBO_FILES)
 else
 DRVGEN_FILE_LIST :=
 endif
@@ -66,46 +64,10 @@ $(DRVGEN_FILE_LIST): $(DRVGEN_TOOL) $(DWS_FILE) $(DRVGEN_FIG) $(PROJ_DTS_FILES)
 		fi \
 	done
 
-dtbo_check: $(MAIN_DTB_NAMES) $(PROJ_DTB_NAMES)
-	for i in $(PROJ_DTB_FILES); do \
+dtbo_check: $(MAIN_DTB_NAMES) $(PROJ_DTBO_NAMES)
+	for i in $(PROJ_DTBO_FILES); do \
 		$(srctree)/scripts/dtc/ufdt_apply_overlay $(MAIN_DTB_FILES) $$i $$i.merge;\
+		rm $$i.merge;\
 	done
-
-my_dtbo_id := 0
-define mk_dtboimg_cfg
-echo $(1) >>$(2);\
-echo " id=$(my_dtbo_id)" >>$(2);\
-$(eval my_dtbo_id:=$(shell echo $$(($(my_dtbo_id)+1))))
-endef
-
-dtbs: $(objtree)/dtboimg.cfg $(objtree)/dtbimg.cfg
-
-my_dtb_id := 0
-define mk_dtbimg_cfg
-echo $(1) >>$(2);\
-echo " id=$(my_dtb_id)" >>$(2);\
-$(eval my_dtb_id:=$(shell echo $$(($(my_dtb_id)+1))))
-endef
-
-$(objtree)/dtboimg.cfg: FORCE
-	rm -f $@.tmp
-	$(foreach f,$(ABS_DTB_FILES),$(call mk_dtboimg_cfg,$(f),$@.tmp))
-	if ! cmp -s $@.tmp $@; then \
-		mv $@.tmp $@; \
-	else \
-		rm $@.tmp; \
-	fi
-
-$(objtree)/dtbimg.cfg: FORCE
-	rm -f $@.tmp
-	$(foreach f,$(ABS_DTB2_FILES),$(call mk_dtbimg_cfg,$(f),$@.tmp))
-	if ! cmp -s $@.tmp $@; then \
-		mv $@.tmp $@; \
-	else \
-		rm $@.tmp; \
-fi
-
-else
-dtbo_check:
 
 endif#MTK_PLATFORM
