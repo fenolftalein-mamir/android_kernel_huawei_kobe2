@@ -85,7 +85,7 @@ class ClkObj(ModuleObj):
 
             data = OldClkData()
             data.set_curList(var_list[2:])
-			data.set_defVarName(int(var_list[0]))
+            data.set_defVarName(int(var_list[0]))
             data.set_defCurrent(int(var_list[1]))
 
             key = op[16:].upper()
