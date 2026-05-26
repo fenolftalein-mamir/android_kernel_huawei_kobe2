@@ -257,9 +257,9 @@ class EintObj(ModuleObj):
 
                 if flag:
                     for item in temp_map.keys():
-                        item_data = self.__gpio_obj.get_gpioData(string.atoi(item))
+                        item_data = self.__gpio_obj.get_gpioData(int(item))
 
-                        if item_data.get_defMode() == string.atoi(temp_map[item].split(':')[0]):
+                        if item_data.get_defMode() == int(temp_map[item].split(':')[0]):
                             gpio_vec = []
                             gpio_vec.append(item)
                             return gpio_vec
