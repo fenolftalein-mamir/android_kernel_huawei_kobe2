@@ -45,18 +45,16 @@ from utility.util import LogLevel
 from utility.util import log
 
 def usage():
-print('usage: DrvGen [dws_path] [file_path] [log_path] [paras]...\n\n'+
-      
-'options and arguments:\n\n'+
-
-          'dws_path    :    dws file path\n'+
-          'file_path   :    where you want to put generated files\n'+
-          'log_path    :    where to store the log files\n'+
+    print('usage: DrvGen [dws_path] [file_path] [log_path] [paras]...\n\n' +
+          'options and arguments:\n\n' +
+          'dws_path    :    dws file path\n' +
+          'file_path   :    where you want to put generated files\n' +
+          'log_path    :    where to store the log files\n' +
           'paras        :    parameter for generate wanted file\n'
     )
-def cmp(a, b):
-    return (a > b) - (a < b) 
 
+def cmp(a, b):
+    return (a > b) - (a < b)
 def is_oldDws(path, gen_spec):
     if not os.path.exists(path):
         log(LogLevel.error, 'Can not find %s' %(path))
