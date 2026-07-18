@@ -28,7 +28,7 @@ subdir-ccflags-y += -I$(srctree)/drivers/pinctrl/mediatek/
 
 # Do Nothing, move to standalone repo
 MODULE_NAME := connadp
-obj-y += $(MODULE_NAME).o
+obj-$(CONFIG_MTK_COMBO) += $(MODULE_NAME).o
 $(MODULE_NAME)-objs += common/connectivity_build_in_adapter.o
 $(MODULE_NAME)-objs += common/wmt_build_in_adapter.o
 
@@ -49,4 +49,13 @@ obj-$(CONFIG_MTK_COMBO_CHIP_CONSYS_6765) += wlan_drv_gen4m/
 obj-$(CONFIG_MTK_BTIF) += bt/
 obj-$(CONFIG_MTK_FMRADIO) += fm/
 obj-$(CONFIG_MTK_COMBO_GPS) += gps/
+else
+# Module builds: enter subdirectories with obj-$(CONFIG_*)
+export CONFIG_MTK_COMBO_WIFI_HIF=axi
+export MTK_COMBO_CHIP=CONNAC
+export WLAN_CHIP_ID=6765
+export MTK_ANDROID_WMT=y
+
+obj-$(CONFIG_MTK_COMBO) += common/
+obj-$(CONFIG_MTK_COMBO_WIFI) += wlan/core/gen4m/
 endif
